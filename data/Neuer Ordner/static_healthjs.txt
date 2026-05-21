@@ -1,0 +1,54 @@
+function loadHealth() {
+    fetch("/api/health")
+        .then(r => r.json())
+        .then(data => {
+
+            // Header
+            let h = document.getElementById("health_header");
+            h.innerText = "Health: " + data.strongest;
+            h.style.background =
+                data.color === "green" ? "#00cc00" :
+                data.color === "yellow" ? "#ffcc00" :
+                "#ff4444";
+
+            // Module
+            let tbody = document.querySelector("#health_table tbody");
+            tbody.innerHTML = "";
+
+            data.modules.forEach(m => {
+                let row = document.createElement("tr");
+                row.innerHTML = `
+                    <td>${m.index}</td>
+                    <td>${m.status}</td>
+                    <td>${m.tempMax.toFixed(2)}°C</td>
+                    <td>${m.cellMin.toFixed(3)}V</td>
+                    <td>${m.cellMax.toFixed(3)}V</td>
+                    <td>${m.cellDiff.toFixed(3)}V</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            // Stack
+            document.getElementById("stack_info").innerText =
+                `Min: ${data.stack.cellMin.toFixed(3)}V, ` +
+                `Max: ${data.stack.cellMax.toFixed(3)}V, ` +
+                `Delta: ${data.stack.cellDiff.toFixed(3)}V`;
+
+            // Listen
+            document.getElementById("ok_list").innerText = data.ok.join(", ");
+            document.getElementById("warn_list").innerText = data.warn.join(", ");
+            document.getElementById("err_list").innerText = data.error.join(", ");
+
+            // Historie
+            document.getElementById("warn_hist").innerText = data.warnHistory.join(", ");
+            document.getElementById("err_hist").innerText = data.errorHistory.join(", ");
+        });
+}
+
+function healthReset() {
+    fetch("/api/health/reset")
+        .then(() => loadHealth());
+}
+
+setInterval(loadHealth, 2000);
+loadHealth();

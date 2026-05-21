@@ -1,0 +1,60 @@
+<div class="card">
+    <h2>Health Status</h2>
+    <div id="health_header" class="card" style="padding:10px; font-weight:bold;"></div>
+
+    <h3>Module</h3>
+    <table class="conn-table" id="health_table">
+        <thead>
+            <tr>
+                <th>Modul</th>
+                <th>Status</th>
+                <th>Temp Max</th>
+                <th>Cell Min</th>
+                <th>Cell Max</th>
+                <th>Delta</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <h3>Stack</h3>
+    <div id="stack_info"></div>
+
+    <h3>Listen</h3>
+    <div>OK: <span id="ok_list"></span></div>
+    <div>Warnung: <span id="warn_list"></span></div>
+    <div>Fehler: <span id="err_list"></span></div>
+
+    <h3>Historie</h3>
+    <div>Warnungen: <span id="warn_hist"></span></div>
+    <div>Fehler: <span id="err_hist"></span></div>
+
+    <button onclick="healthReset()">Reset</button>
+</div>
+<div class="card" style="margin-top:20px;">
+  <h3>Health‑Schwellwerte</h3>
+
+  <label>Warnschwelle (V):</label>
+  <input id="cellDiffWarn"
+         type="number"
+         step="0.001"
+         style="width:100px"
+         oninput="healthAutoReload = false">
+
+  <br><br>
+
+  <label>Fehlerschwelle (V):</label>
+  <input id="cellDiffError"
+         type="number"
+         step="0.001"
+         style="width:100px"
+         oninput="healthAutoReload = false">
+
+  <br><br>
+
+  <button onclick="saveHealthConfig()">Speichern</button>
+</div>
+
+
+
+<script src="/static_health.js"></script>

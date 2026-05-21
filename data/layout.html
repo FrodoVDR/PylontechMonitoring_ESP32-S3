@@ -1,16 +1,18 @@
 <!DOCTYPE html>
 <html lang="de">
+
 <head>
-    <meta charset="UTF-8">
-    <title>Pylontech Dashboard</title>
-    <link rel="stylesheet" href="/static_style.css">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="UTF-8">
+<title>Pylontech Dashboard</title>
+<link rel="stylesheet" href="/static_style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 </head>
 
 <body>
 
 <header class="topbar">
     <button class="burger" onclick="toggleSidebar()">☰</button>
+
     <div class="title-with-icons">
         <img src="/Batterie.png" class="logo-icon">
         <h1>Pylontech Monitor</h1>
@@ -19,17 +21,21 @@
 </header>
 
 <aside id="sidebar" class="sidebar">
-	<nav>
-		<a href="#" onclick="loadPage('pages_dashboard'); return false;">Dashboard</a>
-		<a href="#" onclick="loadPage('pages_basevalue'); return false;">Basevalue</a>
-		<a href="#" onclick="loadPage('pages_celldata'); return false;">Celldata</a>
-		<a href="#" onclick="loadPage('pages_statistic'); return false;">Statistic</a>
-		<a href="#" onclick="loadPage('pages_console'); return false;">Battery Console</a>
-		<a href="#" onclick="loadPage('pages_connection'); return false;">Connection</a>
-		<a href="#" onclick="loadPage('pages_log'); return false;">Log</a>
-		<a href="/filemanager">Filemanager</a>
-	</nav>
+<nav id="sidebar-nav">
 
+    <a href="#" onclick="loadPage('pages_dashboard'); return false;">Dashboard</a>
+    <a href="#" onclick="loadPage('pages_basevalue'); return false;">Basevalue</a>
+    <a href="#" onclick="loadPage('pages_celldata'); return false;">Celldata</a>
+    <a href="#" onclick="loadPage('pages_statistic'); return false;">Statistic</a>
+    <a href="#" onclick="loadPage('pages_console'); return false;">Battery Console</a>
+    <a href="#" onclick="loadPage('pages_connection'); return false;">Connection</a>
+    <a href="#" onclick="loadPage('pages_log'); return false;">Log</a>
+    <a href="#" onclick="loadPage('pages_health'); return false;">Health</a>
+
+    <!-- Dynamische Service-Links -->
+    <span id="service-links"></span>
+
+</nav>
 </aside>
 
 <main id="content">
@@ -37,60 +43,91 @@
 </main>
 
 <script>
+// -------------------------------------------------------------
+// Sidebar öffnen/schließen
+// -------------------------------------------------------------
 function toggleSidebar() {
     document.getElementById('sidebar').classList.toggle('open');
 }
 
-function loadPage(url) {
-    fetch(url + ".html")
-    .then(r => r.text())
-    .then(html => {
-        const content = document.getElementById("content");
-        content.innerHTML = html;
-
-        // Alle Skripte im geladenen HTML finden
-        const scripts = content.querySelectorAll("script");
-
-        scripts.forEach(oldScript => {
-            const newScript = document.createElement("script");
-
-            if (oldScript.src) {
-                // Externes Script neu laden
-                newScript.src = oldScript.src;
-
-                // WICHTIG: warten bis Script geladen ist
-                newScript.onload = () => {
-                    if (url.includes("connection")) {
-                        initConnectionPage();
-                    }
-                };
-
-            } else {
-                // Inline-Script übernehmen
-                newScript.textContent = oldScript.textContent;
-
-                // Inline-Scripts sofort ausführen
-                if (url.includes("connection")) {
-                    setTimeout(() => initConnectionPage(), 10);
-                }
-            }
-
-            document.body.appendChild(newScript);
+// -------------------------------------------------------------
+// Sidebar automatisch schließen, wenn ein Link angeklickt wird
+// -------------------------------------------------------------
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll("#sidebar a").forEach(a => {
+        a.addEventListener("click", () => {
+            document.getElementById("sidebar").classList.remove("open");
         });
-
-        // Falls die Seite KEINE Scripts enthält (z.B. Connection-Seite ohne <script>)
-        if (scripts.length === 0 && url.includes("connection")) {
-            initConnectionPage();
-        }
-    })
-    .catch(err => {
-        document.getElementById("content").innerHTML =
-            "Fehler beim Laden: " + err.message;
     });
+
+    updateServiceLinks();
+});
+
+// -------------------------------------------------------------
+// Dynamische Service-Links (Filemanager + Service)
+// -------------------------------------------------------------
+function updateServiceLinks() {
+    let enabled = localStorage.getItem("service_enabled") === "1";
+    let container = document.getElementById("service-links");
+
+    container.innerHTML = "";
+
+    if (enabled) {
+        container.innerHTML = `
+            <a href="#" onclick="loadPage('pages_framedump'); return false;">Frame Dump</a>
+            <a href="#" onclick="loadPage('pages_cpu'); return false;">CPU Monitor</a>
+            <a href="/filemanager">Filemanager</a>
+            <a href="/service">Service</a>
+        `;
+    }
 }
 
 
+// -------------------------------------------------------------
+// Dynamisches Laden der Unterseiten
+// -------------------------------------------------------------
+function loadPage(url) {
+    fetch(url + ".html")
+        .then(r => r.text())
+        .then(html => {
+            const content = document.getElementById("content");
+            content.innerHTML = html;
+
+            const scripts = content.querySelectorAll("script");
+
+            scripts.forEach(oldScript => {
+                const newScript = document.createElement("script");
+
+                if (oldScript.src) {
+                    newScript.src = oldScript.src;
+                    newScript.onload = () => {
+                        if (url.includes("connection")) {
+                            initConnectionPage();
+                        }
+                    };
+                } else {
+                    newScript.textContent = oldScript.textContent;
+                    if (url.includes("connection")) {
+                        setTimeout(() => initConnectionPage(), 10);
+                    }
+                }
+
+                document.body.appendChild(newScript);
+            });
+
+            if (scripts.length === 0 && url.includes("connection")) {
+                initConnectionPage();
+            }
+        })
+        .catch(err => {
+            document.getElementById("content").innerHTML =
+                "Fehler beim Laden: " + err.message;
+        });
+}
+
+// -------------------------------------------------------------
 // Startseite automatisch laden
+// -------------------------------------------------------------
 window.addEventListener("DOMContentLoaded", () => {
     loadPage("pages_dashboard");
 });

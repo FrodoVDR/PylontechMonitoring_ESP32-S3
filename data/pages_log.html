@@ -25,4 +25,41 @@
     <pre id="logmsg"></pre>
 </div>
 
+<!-- Service-Modus -->
+<div class="box" style="margin-top: 20px;">
+    <h3>Service-Modus</h3>
+
+    <label>
+        <input type="checkbox" id="serviceToggle">
+        Service aktivieren
+    </label>
+
+</div>
+
 <script src="/static_log.js"></script>
+
+<script>
+// -------------------------------------------------------------
+// Service-Modus Checkbox initialisieren
+// -------------------------------------------------------------
+document.addEventListener("DOMContentLoaded", () => {
+    // Checkbox Zustand setzen
+    document.getElementById("serviceToggle").checked =
+        localStorage.getItem("service_enabled") === "1";
+
+    // Sidebar aktualisieren
+    updateServiceLinks();
+});
+
+// -------------------------------------------------------------
+// Checkbox Änderung speichern
+// -------------------------------------------------------------
+document.getElementById("serviceToggle").addEventListener("change", function() {
+    if (this.checked) {
+        localStorage.setItem("service_enabled", "1");
+    } else {
+        localStorage.removeItem("service_enabled");
+    }
+    updateServiceLinks();
+});
+</script>
