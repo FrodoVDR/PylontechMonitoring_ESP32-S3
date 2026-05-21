@@ -42,6 +42,36 @@ String PyScheduler::popNextCommand() {
 void PyScheduler::loop() {
     unsigned long now = millis();
 
+    // ---------------------------------------------------------
+    // UNKNOWN-MODUS → Scheduler pausiert + Logging alle 30s
+    // ---------------------------------------------------------
+    if (g_batteryMode == BatteryMode::UNKNOWN) {
+        static unsigned long lastLog = 0;
+        if (now - lastLog > 30000) {
+            Log(LOG_INFO, "Scheduler: UNKNOWN-Modus → warte auf UART-Erkennung");
+            lastLog = now;
+        }
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        return;
+    }
+
+    // ---------------------------------------------------------
+    // HUB-MODUS → Scheduler bleibt passiv + Logging alle 30s
+    // ---------------------------------------------------------
+    if (g_batteryMode == BatteryMode::HUB) {
+        static unsigned long lastLog = 0;
+        if (now - lastLog > 30000) {
+            Log(LOG_INFO, "Scheduler: HUB-Modus aktiv → keine Befehle werden gesendet");
+            lastLog = now;
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        return;
+    }
+
+    // ---------------------------------------------------------
+    // STACK-MODUS → alles wie bisher
+    // ---------------------------------------------------------
+
     // UART busy? Dann warten
     if (uart->isBusy()) return;
 

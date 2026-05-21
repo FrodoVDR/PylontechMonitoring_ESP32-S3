@@ -9,6 +9,15 @@
 #include "config.h"          // zentrale Konfig
 
 // ----------------------------------------------------
+// FreeRTOS CPU Runtime Stats
+// ----------------------------------------------------
+extern "C" uint32_t ulHighFrequencyTimerTicks = 0;
+
+void IRAM_ATTR highFreqTimer(void* arg) {
+    ulHighFrequencyTimerTicks++;
+}
+
+// ----------------------------------------------------
 // Konfiguration
 // ----------------------------------------------------
 static const uint8_t BUTTON_PIN = 0;   // BOOT-Button
@@ -41,6 +50,24 @@ void SystemManager::begin() {
     prefs.end();
 
     Log(LOG_INFO, "SystemManager: BootCounter = " + String(bootCounter));
+    // ----------------------------------------------------
+    // High-Frequency Timer für FreeRTOS CPU-Statistiken
+    // ----------------------------------------------------
+    const esp_timer_create_args_t timerArgs = {
+        .callback = &highFreqTimer,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "cpu_timer"
+    };
+
+    esp_timer_handle_t timerHandle;
+    esp_timer_create(&timerArgs, &timerHandle);
+
+    // 1 µs Takt (1 MHz)
+    esp_timer_start_periodic(timerHandle, 100);
+
+    Log(LOG_INFO, "SystemManager: CPU Runtime Stats aktiviert");
+
 }
 
 // ----------------------------------------------------
@@ -48,7 +75,14 @@ void SystemManager::begin() {
 // ----------------------------------------------------
 void SystemManager::loop() {
     handleButton();
+
+    static unsigned long lastCpuPrint = 0;
+    if (millis() - lastCpuPrint > 5000) {
+        lastCpuPrint = millis();
+        printCpuStats();
+    }
 }
+
 
 // ----------------------------------------------------
 // Button-Auswertung
@@ -145,6 +179,39 @@ void SystemManager::triggerFactoryReset() {
 int SystemManager::getBootCounter() {
     return bootCounter;
 }
+
+void SystemManager::printCpuStats() {
+    char buffer[2048];
+    memset(buffer, 0, sizeof(buffer));
+
+    vTaskGetRunTimeStats(buffer);
+
+    // Werte extrahieren
+    int idle0 = -1;
+    int idle1 = -1;
+
+    char* line = strtok(buffer, "\n");
+    while (line != nullptr) {
+        if (strstr(line, "IDLE0") != nullptr) {
+            sscanf(line, "IDLE0 %*u %d%%", &idle0);
+        }
+        if (strstr(line, "IDLE1") != nullptr) {
+            sscanf(line, "IDLE1 %*u %d%%", &idle1);
+        }
+        line = strtok(nullptr, "\n");
+    }
+
+    if (idle0 >= 0 && idle1 >= 0) {
+        int load0 = 100 - idle0;
+        int load1 = 100 - idle1;
+
+        Log(LOG_DEBUG,
+            "CPU: idle0=" + String(idle0) + "% idle1=" + String(idle1) +
+            "% load0=" + String(load0) + "% load1=" + String(load1) + "%");
+    }
+}
+
+
 
 // ----------------------------------------------------
 // Callback-Variablen

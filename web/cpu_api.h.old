@@ -1,0 +1,32 @@
+#pragma once
+#include "../wp_webserver.h"
+#include <Arduino.h>
+
+inline void handleCpuApi() {
+    char buffer[2048];
+    memset(buffer, 0, sizeof(buffer));
+
+    vTaskGetRunTimeStats(buffer);
+
+    String json = "{ \"stats\": [";
+
+    char* line = strtok(buffer, "\n");
+    bool first = true;
+
+    while (line != nullptr) {
+        if (!first) json += ",";
+        first = false;
+
+        String s(line);
+        s.replace("\t", " ");
+        s.trim();
+
+        json += "\"" + s + "\"";
+
+        line = strtok(nullptr, "\n");
+    }
+
+    json += "] }";
+
+    server.send(200, "application/json", json);
+}

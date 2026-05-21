@@ -11,6 +11,8 @@ AppConfig config;
 
 static const size_t CHUNK_SIZE = 1500;
 
+HealthStatus health;
+
 
 // ----------------------------------------------------
 //  Helper: Save JSON in chunks
@@ -208,7 +210,7 @@ void AppConfig::factoryDefaults() {
     battery.fieldsBat.clear();
     battery.fieldsStat.clear();
 
-    firmwareVersion = "1.0.0";
+    //firmwareVersion = "1.1.0";
     currentTime     = "";
     lastPwrUpdate   = "";
     detectedModules = 0;
@@ -276,7 +278,7 @@ void AppConfig::loadSystemConfig() {
     mqtt.mode       = p.getString("mqtt_mode",    mqtt.mode);
     mqtt.cellPrefix = p.getString("mqtt_cellprefix", mqtt.cellPrefix);
 
-    firmwareVersion = p.getString("fw_ver", firmwareVersion);
+    //firmwareVersion = p.getString("fw_ver", firmwareVersion);
     currentTime     = p.getString("cur_time", currentTime);
     lastPwrUpdate   = p.getString("pwr_last", lastPwrUpdate);
     detectedModules = p.getUShort("pwr_mods", detectedModules);
@@ -350,7 +352,7 @@ void AppConfig::saveSystemConfig() {
     p.putString("mqtt_mode",    mqtt.mode);
     p.putString("mqtt_cellprefix", mqtt.cellPrefix); 
 
-    p.putString("fw_ver", firmwareVersion);
+    //p.putString("fw_ver", firmwareVersion);
     p.putString("cur_time", currentTime);
     p.putString("pwr_last", lastPwrUpdate);
     p.putUShort("pwr_mods", detectedModules);
@@ -374,6 +376,10 @@ void AppConfig::loadPwrConfig() {
     battery.intervalPwr = p.getULong("interval", battery.intervalPwr);
     battery.enableBat   = p.getBool("enabled", battery.enableBat);
 
+    // NEW: Load thresholds
+    battery.cellDiffWarn  = p.getFloat("cellDiffWarn",  battery.cellDiffWarn);
+    battery.cellDiffError = p.getFloat("cellDiffError", battery.cellDiffError);
+
     p.end();
 }
 
@@ -383,6 +389,10 @@ void AppConfig::savePwrConfig() {
 
     p.putULong("interval", battery.intervalPwr);
     p.putBool("enabled", battery.enableBat);
+
+    // NEW: Save thresholds
+    p.putFloat("cellDiffWarn", battery.cellDiffWarn);
+    p.putFloat("cellDiffError", battery.cellDiffError);
 
     p.end();
 }
@@ -744,31 +754,5 @@ StatBuffer statA;
 StatBuffer statB;
 volatile bool statUseA = true;
 
-//unten alt 
+BatteryMode g_batteryMode = BatteryMode::UNKNOWN;
 
-//void applyParsedFrame(const ParsedFrame& f) {
-//
-//    ParsedData* target = useA ? &bufferB : &bufferA;
-//
-//    if (f.type == FRAME_PWR) {
-//        target->stack = f.stack;
-//        target->modules.clear();
-//        for (int i = 0; i < MAX_MODULES; i++) {
-//            if (f.modules[i].present)
-//                target->modules.push_back(f.modules[i]);
-//        }
-//    }
-//    else if (f.type == FRAME_BAT) {
-//        if (f.index < target->batCells.size())
-//            target->batCells[f.index] = f.bat;
-//        else {
-//            target->batCells.resize(f.index + 1);
-//            target->batCells[f.index] = f.bat;
-//        }
-//    }
-//    else if (f.type == FRAME_STAT) {
-//        target->stat = f.stat;
-//    }
-//
-//    useA = !useA;
-//}

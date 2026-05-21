@@ -5,6 +5,8 @@
 //   - Task 2 (Core 1): Non‑critical pipeline (Scheduler + MQTT + Webserver + WiFi)
 // =========================
 
+
+
 // ---- System Includes ----
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -27,11 +29,14 @@
 #include "py_parser_stat.h"
 #include "py_log.h"
 #include "py_mqtt.h"
-//#include "py_display.h"
+#include "py_display.h"
 
 // =========================
 //  Global Data Structures
 // =========================
+
+// Magic Header – MUSS in der .bin stehen
+const char OTA_MAGIC_HEADER[] = "PYLONTECH_FW_V1";
 
 //PyDisplay display;
 
@@ -165,10 +170,40 @@ void noncriticalTask(void* parameter) {
                     " alloc=" + info.total_allocated_bytes
                 );
             }
-        
-        //display.loop();
-        
         }
+
+        // Display-Update (NICHT im Debug-Block!)
+        if (parserHasData) {
+            auto pwr = pwrUseA ? pwrA : pwrB;
+
+            if (!pwr.modules.empty()) {
+                auto &s = pwr.stack;
+
+                display.updatePwr(
+                    s.avgVoltage_mV,
+                    s.totalCurrent_mA,
+                    s.temperature,
+                    s.soc
+                );
+            }
+        }
+
+        bool apMode = (WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA);
+
+        display.updateWifi(
+            WiFi.status() == WL_CONNECTED,
+            WiFi.localIP().toString(),
+            WiFi.RSSI(),
+            apMode
+        );
+
+        // Display nur alle 500 ms aktualisieren
+        static unsigned long lastDisplay = 0;
+        if (now - lastDisplay >= 500) {
+            lastDisplay = now;
+            display.loop();
+        }
+
 
         vTaskDelay(1);
     }
@@ -234,7 +269,10 @@ void setup() {
         }
         return String("UNKNOWN");
     });
-    //display.begin();
+    display.begin();
+    display.setBrightness(150);   // z.B. ~80%
+
+
 
     // Start Task 1 (Real‑Time) on Core 1
     xTaskCreatePinnedToCore(

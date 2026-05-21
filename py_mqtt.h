@@ -5,6 +5,8 @@
 #include <WiFiClient.h>
 #include <ArduinoJson.h>
 #include "config.h"
+#include "py_parser_pwr.h"
+
 
 // Forward declarations
 struct BatteryModule;
@@ -42,6 +44,8 @@ public:
 
     bool isConnected() { return mqttClient.connected(); }
     void publishDiscoveryStatModule(int moduleIndex);
+    bool publishDirect(const String& topic, const String& payload);
+
 
 
 private:

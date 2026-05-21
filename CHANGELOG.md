@@ -4,11 +4,24 @@ All notable changes to this project will be documented in this file.
 ## ToDo
 
 - other Homeautomation (Discoverer)
-- Display? 
 
-## 2026-05-03 
-- more stable Website
+## 2026-05-14 
+- 1.2.1
+- config values for helth
+- Alpha for Pylontech Hub
 
+## 2026-05-14 
+- 1.2.0
+- OTA from Website 
+
+## 2026-04-30 
+- 1.1.0
+- Display (ST7735)
+- helth page 
+
+## 2026-04-15 
+- 1.0.0
+- Stable Website
 
 ## 2026-04-03 
 - Stable communikation to battery

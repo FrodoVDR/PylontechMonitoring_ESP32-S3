@@ -18,8 +18,11 @@ button { padding: 6px 12px; margin-left: 10px; }
 
 <h2>ESP32 File Manager</h2>
 
-<input type="file" id="file">
+<input type="file" id="file" multiple>
 <button onclick="upload()">Upload</button>
+
+<progress id="prog" value="0" max="100" style="display:none"></progress>
+<span id="progtext"></span>
 
 <table id="tbl"></table>
 
@@ -34,7 +37,7 @@ function load() {
                 <td>${f.name}</td>
                 <td>${f.size}</td>
                 <td>
-                    <a href="/fm/download?file=${f.name}">Download</a>
+                    <a href="/fm/download?file=${encodeURIComponent(f.name)}">Download</a>
                     <a href="#" onclick="del('${f.name}')">Delete</a>
                 </td>
             </tr>`;
@@ -43,17 +46,53 @@ function load() {
     });
 }
 
-function upload() {
-    let f = document.getElementById("file").files[0];
-    let fd = new FormData();
-    fd.append("file", f, f.name);
-    fetch("/fm/upload", { method:"POST", body:fd })
-        .then(() => load());
+async function upload() {
+    let files = document.getElementById("file").files;
+    if (!files.length) return;
+
+    let prog = document.getElementById("prog");
+    let progtext = document.getElementById("progtext");
+
+    prog.style.display = "inline-block";
+    prog.value = 0;
+    progtext.innerText = "0%";
+
+    for (let i = 0; i < files.length; i++) {
+        let f = files[i];
+
+        let fd = new FormData();
+        fd.append("file", f, f.name);
+
+        await new Promise((resolve, reject) => {
+            let xhr = new XMLHttpRequest();
+            xhr.open("POST", "/fm/upload");
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    let p = Math.round((e.loaded / e.total) * 100);
+                    prog.value = p;
+                    progtext.innerText = `Datei ${i+1}/${files.length}: ${p}%`;
+                }
+            };
+
+            xhr.onload = function() {
+                if (xhr.status === 200) resolve();
+                else reject();
+            };
+
+            xhr.onerror = reject;
+            xhr.send(fd);
+        });
+    }
+
+    prog.value = 100;
+    progtext.innerText = "Fertig!";
+    load();
 }
 
 function del(name) {
-    fetch("/fm/delete?file=" + name)
-        .then(() => load());
+    fetch("/fm/delete?file=" + encodeURIComponent(name))
+    .then(() => load());
 }
 
 load();

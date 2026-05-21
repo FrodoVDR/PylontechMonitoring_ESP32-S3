@@ -6,6 +6,7 @@
 #include "py_parser_bat.h"
 #include "py_parser_stat.h"
 #include "py_mqtt.h"
+#include "py_mqtt_hub.h"
 #include <WiFi.h>
 #include <map>
 #include <set>
@@ -20,6 +21,7 @@
 
 // Queue from main application (Task 1 → Task 2)
 extern QueueHandle_t mqttQueue;
+static PyMqttHub py_mqtt_hub;
 
 // Parser state flags
 bool parserHasData        = false;
@@ -85,6 +87,12 @@ bool PyMqtt::precisionDiffersFromDefault(const String& unit) {
     int desired = precisionForUnit(unit);
     return desired != 0;
 }
+
+bool PyMqtt::publishDirect(const String& topic, const String& payload) {
+    if (!enabled || !mqttClient.connected()) return false;
+    return mqttClient.publish(topic.c_str(), payload.c_str());
+}
+
 
 /* ---------------------------------------------------------------------------
    LOGGING HELPERS
@@ -244,14 +252,26 @@ void PyMqtt::loop() {
     }
 
     // ---------------------------------------------------------
-    // PUBLISH PWR
+    // PUBLISH PWR (Stack mode vs Hub mode)
     // ---------------------------------------------------------
+
     if (parserHasData) {
-        publishStack(pwr->stack);
-        for (const auto& mod : pwr->modules) {
-            if (!mod.present) continue;
-            publishBat(mod.index, mod);
+
+        if (g_batteryMode == BatteryMode::STACK) {
+            // Original behavior
+            publishStack(pwr->stack);
+
+            for (const auto& mod : pwr->modules) {
+                if (!mod.present) continue;
+                publishBat(mod.index, mod);
+            }
         }
+        else if (g_batteryMode == BatteryMode::HUB) {
+            // NEW: Hub publishing
+            py_mqtt_hub.publishHubStacks(lastParsedHub);
+            py_mqtt_hub.publishHubModules(pwr->modules);
+        }
+
         parserHasData = false;
     }
 
@@ -293,6 +313,20 @@ void PyMqtt::handleDiscoveryStep(
     const StatBuffer& stat
 ) {
     if (!enabled || !mqttClient.connected()) return;
+    // ---------------------------------------------------------
+    // HUB DISCOVERY OVERRIDE
+    // ---------------------------------------------------------
+    if (g_batteryMode == BatteryMode::HUB) {
+        // Run Hub discovery once
+        py_mqtt_hub.publishHubDiscovery(lastParsedHub);
+
+        // Mark discovery as finished
+        discoveryPhase = DISC_DONE;
+        discoveryActive = false;
+
+        return;
+    }
+
 
     switch (discoveryPhase) {
 
@@ -486,6 +520,23 @@ String PyMqtt::buildTopic(
            String(moduleIndex) + "/" + fieldName;
 }
 
+String getStackHealthState() {
+    if (!health.errorModules.empty()) return "ERROR";
+    if (!health.warnModules.empty())  return "WARN";
+    return "OK";
+}
+
+String getModuleStatusString() {
+    String out = "";
+    for (auto &m : health.modules) {
+        if (m.status == "Fehler")       out += "2";
+        else if (m.status == "Warnung") out += "1";
+        else                            out += "0";
+    }
+    return out;
+}
+
+
 /* ---------------------------------------------------------------------------
    PUBLISH STACK JSON
 --------------------------------------------------------------------------- */
@@ -500,11 +551,18 @@ void PyMqtt::publishStack(const BatteryStack& stack) {
     doc["StackTempMax"] = stack.temperature / 1000.0f;
     doc["BatteryCount"] = stack.batteryCount;
 
+    // Health-State
+    doc["HealthState"] = getStackHealthState();
+
+    // Kompakter Modulstatus
+    doc["ModuleState"] = getModuleStatusString();
+
     String payload;
     serializeJson(doc, payload);
 
     mqttClient.publish(topic.c_str(), payload.c_str());
 }
+
 
 /* ---------------------------------------------------------------------------
    PUBLISH PWR MODULE JSON
@@ -772,6 +830,55 @@ void PyMqtt::publishDiscoveryStack() {
 
         vTaskDelay(5);
     }
+// ---------------------------------------------------------
+// DISCOVERY: HealthState
+// ---------------------------------------------------------
+{
+    String key = "HealthState";
+    String uniqueId = prefixId + "_stack_healthstate";
+    String discTopic = "homeassistant/sensor/" + uniqueId + "/config";
+
+    StaticJsonDocument<512> doc;
+    doc["name"] = "Health State";
+    doc["uniq_id"] = uniqueId;
+    doc["obj_id"] = uniqueId;
+
+    doc["state_topic"] = stateTopic;
+    doc["value_template"] = "{{ value_json.HealthState }}";
+
+    doc["icon"] = "mdi:heart-pulse";
+    doc["dev"]["ids"] = prefixId;
+    doc["dev"]["name"] = prefix + " Stack";
+
+    String payload;
+    serializeJson(doc, payload);
+    mqttClient.publish(discTopic.c_str(), payload.c_str(), true);
+}
+
+// ---------------------------------------------------------
+// DISCOVERY: ModuleState
+// ---------------------------------------------------------
+{
+    String key = "ModuleState";
+    String uniqueId = prefixId + "_stack_modulestate";
+    String discTopic = "homeassistant/sensor/" + uniqueId + "/config";
+
+    StaticJsonDocument<512> doc;
+    doc["name"] = "Module State";
+    doc["uniq_id"] = uniqueId;
+    doc["obj_id"] = uniqueId;
+
+    doc["state_topic"] = stateTopic;
+    doc["value_template"] = "{{ value_json.ModuleState }}";
+
+    doc["icon"] = "mdi:battery-heart-variant";
+    doc["dev"]["ids"] = prefixId;
+    doc["dev"]["name"] = prefix + " Stack";
+
+    String payload;
+    serializeJson(doc, payload);
+    mqttClient.publish(discTopic.c_str(), payload.c_str(), true);
+}    
 }
 
 /* ---------------------------------------------------------------------------

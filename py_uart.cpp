@@ -32,6 +32,34 @@ static bool isValidFrame(const String& f) {
     return true;
 }
 
+bool detectHubMode() {
+    unsigned long start = millis();
+    const unsigned long timeout = 10000; // 2.5 Sekunden zuhören
+
+    String buffer = "";
+
+    while (millis() - start < timeout) {
+        while (Serial2.available()) {
+            char c = Serial2.read();
+            buffer += c;
+
+            // Heuristik: Hub-PWR-Frame enthält immer '@' und '$$'
+            if (buffer.indexOf("@") >= 0 &&
+                buffer.indexOf("$$") >= 0 &&
+                buffer.length() > 200) {
+
+                Log(LOG_INFO, "UART: Hub-Frame erkannt → HUB-Modus");
+                return true;
+            }
+        }
+        delay(5);
+    }
+
+    Log(LOG_INFO, "UART: Keine Hub-Daten empfangen → STACK-Modus");
+    return false;
+}
+
+
 // ---------------------------------------------------------
 void PyUart::begin(int rx, int tx) {
     rxPin = rx;
@@ -41,6 +69,39 @@ void PyUart::begin(int rx, int tx) {
     delay(50);
 
     Log(LOG_INFO, "UART: begin() RX=" + String(rxPin) + " TX=" + String(txPin));
+
+    // ---------------------------------------------------------
+    // AUTO-DETECTION: HUB oder STACK
+    // ---------------------------------------------------------
+    if (g_batteryMode == BatteryMode::UNKNOWN) {
+        Log(LOG_INFO, "UART: Auto-Erkennung gestartet...");
+
+        bool hub = detectHubMode();
+
+        if (hub) {
+            g_batteryMode = BatteryMode::HUB;
+        } else {
+            g_batteryMode = BatteryMode::STACK;
+        }
+    }
+
+    // ---------------------------------------------------------
+    // Weiter mit passendem Modus
+    // ---------------------------------------------------------
+    if (g_batteryMode == BatteryMode::HUB) {
+        Log(LOG_INFO, "UART: Starte im HUB-Modus (nur zuhören)");
+        commReady = true;      // wir brauchen kein wakeUpConsole()
+        busy = false;
+        frameReady = false;
+        frameValid = false;
+        return;                // WICHTIG: Stack-Initialisierung überspringen
+    }
+
+    // ---------------------------------------------------------
+    // STACK-MODUS → normale Initialisierung
+    // ---------------------------------------------------------
+    wakeUpConsole();
+
 
     commReady     = false;
     busy          = false;

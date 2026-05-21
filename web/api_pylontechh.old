@@ -1,0 +1,385 @@
+#pragma once
+#include "api_core.h"
+#include <ArduinoJson.h>
+
+#include "../config.h"
+#include "../py_parser_bat.h"
+#include "../py_parser_pwr.h"
+#include "../py_parser_stat.h"
+#include "../wp_webserver.h"
+
+// BAT ----------------------------------------------------------------
+
+static void handleBatGet() {
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, F("application/json"), "");
+    server.sendContent(F("{"));
+
+    // CONFIG
+    server.sendContent(F("\"config\":{"));
+    server.sendContent(F("\"intervalBat\":"));
+    server.sendContent(String(config.battery.intervalBat));
+    server.sendContent(F(",\"enableBat\":"));
+    server.sendContent(config.battery.enableBat ? F("true") : F("false"));
+    server.sendContent(F("},"));
+
+    // MQTT
+    server.sendContent(F("\"mqtt\":{"));
+    server.sendContent(F("\"topicBat\":\""));
+    server.sendContent(config.mqtt.topicBat);
+    server.sendContent(F("\",\"cellPrefix\":\""));
+    server.sendContent(config.mqtt.cellPrefix);
+    server.sendContent(F("\"},"));
+
+    // HEADERS
+    server.sendContent(F("\"headers\":["));
+    for (size_t i = 0; i < lastParsedBat.fields.size(); i++) {
+        if (i > 0) server.sendContent(F(","));
+        server.sendContent(F("\""));
+        server.sendContent(lastParsedBat.fields[i].name);
+        server.sendContent(F("\""));
+    }
+    server.sendContent(F("],"));
+
+    // VALUES
+    server.sendContent(F("\"values\":["));
+    for (size_t i = 0; i < lastParsedBat.fields.size(); i++) {
+        if (i > 0) server.sendContent(F(","));
+        server.sendContent(F("\""));
+        server.sendContent(lastParsedBat.fields[i].raw);
+        server.sendContent(F("\""));
+    }
+    server.sendContent(F("],"));
+
+    // FIELDS
+    server.sendContent(F("\"fields\":["));
+    bool first = true;
+    for (auto &pf : lastParsedBat.fields) {
+        if (!config.battery.fieldsBat.count(pf.name)) continue;
+        const FieldConfig &f = config.battery.fieldsBat.at(pf.name);
+
+        StaticJsonDocument<256> doc;
+        JsonObject o = doc.to<JsonObject>();
+        o["name"]        = pf.name;
+        o["display"]     = f.display;
+        o["factor"]      = f.factor;
+        o["unit"]        = f.unit;
+        o["sendMQTT"]    = f.mqtt;
+        o["sendPayload"] = f.send;
+        o["raw"]         = pf.raw;
+        o["value"]       = pf.raw;
+
+        String tmp;
+        serializeJson(o, tmp);
+
+        if (!first) server.sendContent(F(","));
+        first = false;
+        server.sendContent(tmp);
+    }
+    server.sendContent(F("]"));
+
+    server.sendContent(F("}"));
+}
+
+static void handleBatPost() {
+    if (!server.hasArg("plain"))
+        return apiError(400, F("Missing body"));
+
+    StaticJsonDocument<4096> req;
+    if (deserializeJson(req, server.arg("plain")))
+        return apiError(400, F("Invalid JSON"));
+
+    // CONFIG
+    config.battery.intervalBat = req["config"]["intervalBat"] | config.battery.intervalBat;
+    config.battery.enableBat   = req["config"]["enableBat"]   | config.battery.enableBat;
+
+    // MQTT
+    config.mqtt.topicBat   = req["mqtt"]["topicBat"]   | config.mqtt.topicBat;
+    config.mqtt.cellPrefix = req["mqtt"]["cellPrefix"] | config.mqtt.cellPrefix;
+
+    // FIELDS
+    JsonArray arr = req["fields"];
+    for (JsonObject f : arr) {
+        String name = f["name"] | "";
+        if (name.isEmpty()) continue;
+
+        if (!config.battery.fieldsBat.count(name)) {
+            FieldConfig fc;
+            fc.label   = name;
+            fc.display = name;
+            fc.factor  = "1";
+            fc.unit    = "";
+            fc.mqtt    = false;
+            fc.send    = false;
+            config.battery.fieldsBat[name] = fc;
+        }
+
+        FieldConfig &fc = config.battery.fieldsBat[name];
+        fc.display = f["display"]     | fc.display;
+        fc.label   = f["display"]     | fc.label;
+        fc.factor  = f["factor"]      | fc.factor;
+        fc.unit    = f["unit"]        | fc.unit;
+        fc.mqtt    = f["sendMQTT"]    | false;
+        fc.send    = f["sendPayload"] | false;
+    }
+
+    discoveryBatNeeded = true;
+    config.save();
+    apiText(F("BAT settings saved"));
+}
+
+// PWR ----------------------------------------------------------------
+
+static void handlePwrGet() {
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, F("application/json"), "");
+    server.sendContent(F("{"));
+
+    // CONFIG
+    server.sendContent(F("\"config\":{"));
+    server.sendContent(F("\"intervalPwr\":"));
+    server.sendContent(String(config.battery.intervalPwr));
+    server.sendContent(F(",\"useFahrenheit\":"));
+    server.sendContent(config.battery.useFahrenheit ? F("true") : F("false"));
+    server.sendContent(F("},"));
+
+    // MQTT
+    server.sendContent(F("\"mqtt\":{"));
+    server.sendContent(F("\"topicStack\":\""));
+    server.sendContent(config.mqtt.topicStack);
+    server.sendContent(F("\",\"topicPwr\":\""));
+    server.sendContent(config.mqtt.topicPwr);
+    server.sendContent(F("\"},"));
+
+    // HEADERS
+    server.sendContent(F("\"headers\":["));
+    for (size_t i = 0; i < lastParserHeader.size(); i++) {
+        if (i > 0) server.sendContent(F(","));
+        server.sendContent(F("\""));
+        server.sendContent(lastParserHeader[i]);
+        server.sendContent(F("\""));
+    }
+    server.sendContent(F("],"));
+
+    // VALUES
+    server.sendContent(F("\"values\":["));
+    for (size_t i = 0; i < lastParserValues.size(); i++) {
+        if (i > 0) server.sendContent(F(","));
+        server.sendContent(F("\""));
+        server.sendContent(lastParserValues[i]);
+        server.sendContent(F("\""));
+    }
+    server.sendContent(F("],"));
+
+    // FIELDS
+    server.sendContent(F("\"fields\":["));
+    bool firstField = true;
+    for (size_t i = 0; i < lastParserHeader.size(); i++) {
+        const String &name = lastParserHeader[i];
+        if (!config.battery.fieldsPwr.count(name)) continue;
+
+        const FieldConfig &f = config.battery.fieldsPwr.at(name);
+        String raw = (i < lastParserValues.size()) ? lastParserValues[i] : "";
+
+        StaticJsonDocument<256> doc;
+        JsonObject o = doc.to<JsonObject>();
+        o["name"]        = name;
+        o["display"]     = f.display;
+        o["factor"]      = f.factor;
+        o["unit"]        = f.unit;
+        o["sendMQTT"]    = f.mqtt;
+        o["sendPayload"] = f.send;
+        o["raw"]         = raw;
+        o["value"]       = raw;
+
+        String tmp;
+        serializeJson(o, tmp);
+
+        if (!firstField) server.sendContent(F(","));
+        firstField = false;
+        server.sendContent(tmp);
+    }
+    server.sendContent(F("]"));
+
+    server.sendContent(F("}"));
+}
+
+static void handlePwrPost() {
+    if (!server.hasArg("plain"))
+        return apiError(400, F("Missing body"));
+
+    StaticJsonDocument<4096> req;
+    if (deserializeJson(req, server.arg("plain")))
+        return apiError(400, F("Invalid JSON"));
+
+    // CONFIG
+    config.battery.intervalPwr   = req["config"]["intervalPwr"]   | config.battery.intervalPwr;
+    config.battery.useFahrenheit = req["config"]["useFahrenheit"] | config.battery.useFahrenheit;
+
+    // MQTT
+    config.mqtt.topicStack = req["mqtt"]["topicStack"] | config.mqtt.topicStack;
+    config.mqtt.topicPwr   = req["mqtt"]["topicPwr"]   | config.mqtt.topicPwr;
+
+    // FIELDS
+    JsonArray arr = req["fields"];
+    for (JsonObject f : arr) {
+        String name = f["name"] | "";
+        if (name.isEmpty()) continue;
+
+        if (!config.battery.fieldsPwr.count(name)) {
+            FieldConfig fc;
+            fc.label   = name;
+            fc.display = name;
+            fc.factor  = "1";
+            fc.unit    = "";
+            fc.mqtt    = false;
+            fc.send    = false;
+            config.battery.fieldsPwr[name] = fc;
+        }
+
+        FieldConfig &fc = config.battery.fieldsPwr[name];
+        fc.display = f["display"]     | fc.display;
+        fc.label   = f["display"]     | fc.label;
+        fc.factor  = f["factor"]      | fc.factor;
+        fc.unit    = f["unit"]        | fc.unit;
+        fc.mqtt    = f["sendMQTT"]    | false;
+        fc.send    = f["sendPayload"] | false;
+    }
+
+    discoveryPwrNeeded = true;
+    config.save();
+    apiText(F("PWR settings saved"));
+}
+
+// STAT ---------------------------------------------------------------
+
+static void handleStatGet() {
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, F("application/json"), "");
+    server.sendContent(F("{"));
+
+    // CONFIG
+    server.sendContent(F("\"config\":{"));
+    server.sendContent(F("\"intervalStat\":"));
+    server.sendContent(String(config.battery.intervalStat));
+    server.sendContent(F(",\"enableStat\":"));
+    server.sendContent(config.battery.enableStat ? F("true") : F("false"));
+    server.sendContent(F("},"));
+
+    // MQTT
+    server.sendContent(F("\"mqtt\":{"));
+    server.sendContent(F("\"topicStat\":\""));
+    server.sendContent(config.mqtt.topicStat);
+    server.sendContent(F("\"},"));
+
+    // HEADERS
+    server.sendContent(F("\"headers\":["));
+    for (size_t i = 0; i < lastParsedStat.fields.size(); i++) {
+        if (i > 0) server.sendContent(F(","));
+        server.sendContent(F("\""));
+        server.sendContent(lastParsedStat.fields[i].name);
+        server.sendContent(F("\""));
+    }
+    server.sendContent(F("],"));
+
+    // VALUES
+    server.sendContent(F("\"values\":["));
+    for (size_t i = 0; i < lastParsedStat.fields.size(); i++) {
+        if (i > 0) server.sendContent(F(","));
+        server.sendContent(F("\""));
+        server.sendContent(lastParsedStat.fields[i].raw);
+        server.sendContent(F("\""));
+    }
+    server.sendContent(F("],"));
+
+    // FIELDS
+    server.sendContent(F("\"fields\":["));
+    bool first = true;
+    for (auto &pf : lastParsedStat.fields) {
+        if (!config.battery.fieldsStat.count(pf.name)) continue;
+        const FieldConfig &f = config.battery.fieldsStat.at(pf.name);
+
+        StaticJsonDocument<256> doc;
+        JsonObject o = doc.to<JsonObject>();
+        o["name"]        = pf.name;
+        o["display"]     = f.display;
+        o["factor"]      = f.factor;
+        o["unit"]        = f.unit;
+        o["sendMQTT"]    = f.mqtt;
+        o["sendPayload"] = f.send;
+        o["raw"]         = pf.raw;
+        o["value"]       = pf.raw;
+
+        String tmp;
+        serializeJson(o, tmp);
+
+        if (!first) server.sendContent(F(","));
+        first = false;
+        server.sendContent(tmp);
+    }
+    server.sendContent(F("]"));
+
+    server.sendContent(F("}"));
+}
+
+static void handleStatPost() {
+    if (!server.hasArg("plain"))
+        return apiError(400, F("Missing body"));
+
+    StaticJsonDocument<4096> req;
+    if (deserializeJson(req, server.arg("plain")))
+        return apiError(400, F("Invalid JSON"));
+
+    // CONFIG
+    config.battery.intervalStat = req["config"]["intervalStat"] | config.battery.intervalStat;
+    config.battery.enableStat   = req["config"]["enableStat"]   | config.battery.enableStat;
+
+    // MQTT
+    config.mqtt.topicStat = req["mqtt"]["topicStat"] | config.mqtt.topicStat;
+
+    // FIELDS
+    JsonArray arr = req["fields"];
+    for (JsonObject f : arr) {
+        String name = f["name"] | "";
+        if (name.isEmpty()) continue;
+
+        if (!config.battery.fieldsStat.count(name)) {
+            FieldConfig fc;
+            fc.label   = name;
+            fc.display = name;
+            fc.factor  = "1";
+            fc.unit    = "";
+            fc.mqtt    = false;
+            fc.send    = false;
+            config.battery.fieldsStat[name] = fc;
+        }
+
+        FieldConfig &fc = config.battery.fieldsStat[name];
+        fc.display = f["display"]     | fc.display;
+        fc.label   = f["display"]     | fc.label;
+        fc.factor  = f["factor"]      | fc.factor;
+        fc.unit    = f["unit"]        | fc.unit;
+        fc.mqtt    = f["sendMQTT"]    | false;
+        fc.send    = f["sendPayload"] | false;
+    }
+
+    discoveryStatNeeded = true;
+    config.save();
+    apiText(F("STAT settings saved"));
+}
+
+// Registrierung ------------------------------------------------------
+
+inline void registerPylontechAPI() {
+    // BAT
+    server.on("/api/pylontech/bat",  HTTP_GET,  handleBatGet);
+    server.on("/api/pylontech/bat",  HTTP_POST, handleBatPost);
+
+    // PWR
+    server.on("/api/pylontech/pwr",  HTTP_GET,  handlePwrGet);
+    server.on("/api/pylontech/pwr",  HTTP_POST, handlePwrPost);
+
+    // STAT
+    server.on("/api/pylontech/stat", HTTP_GET,  handleStatGet);
+    server.on("/api/pylontech/stat", HTTP_POST, handleStatPost);
+}

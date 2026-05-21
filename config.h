@@ -19,7 +19,8 @@ String getTimezoneJson();
 String findPosixForTimezone(const String& tzName);
 extern const TimezoneEntry TIMEZONES[];
 extern const size_t TIMEZONE_COUNT;
-
+// Magic-Header-Deklaration
+extern const char OTA_MAGIC_HEADER[];
 // ---------------------------------------------------------
 // FieldConfig
 // ---------------------------------------------------------
@@ -51,6 +52,10 @@ struct BatteryConfig {
     std::map<String, FieldConfig> fieldsPwr;
     std::map<String, FieldConfig> fieldsBat;
     std::map<String, FieldConfig> fieldsStat;
+
+    float cellDiffWarn = 0.010f;   // 10 mV Warnschwelle
+    float cellDiffError = 0.020f;  // 20 mV Fehlerschwelle
+
 };
 
 // ---------------------------------------------------------
@@ -79,7 +84,9 @@ struct MqttConfig {
 // ---------------------------------------------------------
 struct BatteryModule {
     bool present = false;
-    int index = 0;
+    int hub   = 0;   // 0 = no hub / stack mode
+    int stack = 0;   // 1..5 in hub mode
+    int index = 0;   // module index (Power/Module)
     int voltage_mV = 0;
     int current_mA = 0;
     int temperature = 0;
@@ -93,6 +100,9 @@ struct BatteryStack {
     int totalCurrent_mA = 0;
     int temperature = 0;
     int soc = 0;
+
+    int stackID = 0;   // <--- ADD THIS
+    int hubID = 0;     // <--- OPTIONAL, useful for Masterhub
 
     void reset() {
         batteryCount = 0;
@@ -174,7 +184,7 @@ enum ParseResult {
     PARSE_IGNORED
 };
 
-#define MAX_MODULES 16
+#define MAX_MODULES 80
 
 enum FrameType {
     FRAME_PWR,
@@ -191,6 +201,17 @@ struct ParsedFrame {
     BatData bat;
     StatData stat;
 };
+// ---------------------------------------------------------
+// Battery operating mode (Stack / Hub / Unknown)
+// ---------------------------------------------------------
+enum class BatteryMode {
+    UNKNOWN = 0,
+    STACK   = 1,
+    HUB     = 2
+};
+
+// Global mode variable
+extern BatteryMode g_batteryMode;
 
 
 // ---------------------------------------------------------
@@ -243,7 +264,7 @@ public:
     MqttConfig mqtt;
     BatteryConfig battery;
 
-    String firmwareVersion = "1.0.0";
+    String firmwareVersion = "1.2.1";
     String currentTime     = "";
     String lastPwrUpdate   = "";
     uint16_t detectedModules = 0;
@@ -289,5 +310,37 @@ private:
     void saveJsonChunked(const char* ns, const char* prefix, const String& json);
     String loadJsonChunked(const char* ns, const char* prefix);
 };
+struct ModuleHealth {
+    int index = 0;
+
+    float tempMax = 0;      // höchste Temperatur (Tempr oder Thigh)
+    float cellMin = 0;      // Vlow
+    float cellMax = 0;      // Vhigh
+    float cellDiff = 0;     // Delta
+
+    String strongestState = "Normal";  // stärkster Status
+    String status = "OK";              // OK / Warnung / Fehler
+};
+
+struct HealthStatus {
+    std::vector<ModuleHealth> modules;
+
+    std::vector<int> okModules;
+    std::vector<int> warnModules;
+    std::vector<int> errorModules;
+
+    std::vector<int> warnHistory;
+    std::vector<int> errorHistory;
+
+    float stackCellMin = 0;
+    float stackCellMax = 0;
+    float stackCellDiff = 0;
+
+    String strongestMessage = "OK";
+    String color = "green"; // green, yellow, red
+};
+
+extern HealthStatus health;
+
 
 extern AppConfig config;
