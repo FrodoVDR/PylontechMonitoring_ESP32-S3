@@ -96,7 +96,7 @@ Requirement: [arduino-cli](https://arduino.github.io/arduino-cli/) and ESP32 cor
 
 ```bash
 # Provide partition table
-cp partitions/pylontech_ota_spiffs.csv partitions.csv
+cp partitions/pylontech_ota_spiffs.csv.[4M|16M] partitions.csv
 
 # Compile
 arduino-cli compile \

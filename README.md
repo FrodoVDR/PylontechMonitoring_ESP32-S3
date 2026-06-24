@@ -95,8 +95,8 @@ RJ45 Pin 8 (braun)     → GND
 Voraussetzung: [arduino-cli](https://arduino.github.io/arduino-cli/) installiert, ESP32-Core installiert.
 
 ```bash
-# Partitionstabelle bereitstellen
-cp partitions/pylontech_ota_spiffs.csv partitions.csv
+# Partitionstabelle bereitstellen: 4M bei 4MB Flash, 16M bei 16MB Flash
+cp partitions/pylontech_ota_spiffs.csv.[4M|16M] partitions.csv
 
 # Kompilieren
 arduino-cli compile \
