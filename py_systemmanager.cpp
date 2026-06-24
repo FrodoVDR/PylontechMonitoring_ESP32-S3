@@ -77,7 +77,7 @@ void SystemManager::loop() {
     handleButton();
 
     static unsigned long lastCpuPrint = 0;
-    if (millis() - lastCpuPrint > 5000) {
+    if (config.logDebug && (millis() - lastCpuPrint > 30000)) {
         lastCpuPrint = millis();
         printCpuStats();
     }
@@ -181,10 +181,16 @@ int SystemManager::getBootCounter() {
 }
 
 void SystemManager::printCpuStats() {
-    char buffer[2048];
+    char buffer[4096];
     memset(buffer, 0, sizeof(buffer));
 
     vTaskGetRunTimeStats(buffer);
+
+    // If the output was truncated, skip parsing to avoid undefined strtok/sscanf behavior.
+    if (buffer[sizeof(buffer) - 1] != '\0') {
+        Log(LOG_WARN, "CPU stats truncated; skipping parse");
+        return;
+    }
 
     // Werte extrahieren
     int idle0 = -1;
@@ -193,10 +199,10 @@ void SystemManager::printCpuStats() {
     char* line = strtok(buffer, "\n");
     while (line != nullptr) {
         if (strstr(line, "IDLE0") != nullptr) {
-            sscanf(line, "IDLE0 %*u %d%%", &idle0);
+            if (sscanf(line, "IDLE0 %*u %d%%", &idle0) != 1) idle0 = -1;
         }
         if (strstr(line, "IDLE1") != nullptr) {
-            sscanf(line, "IDLE1 %*u %d%%", &idle1);
+            if (sscanf(line, "IDLE1 %*u %d%%", &idle1) != 1) idle1 = -1;
         }
         line = strtok(nullptr, "\n");
     }

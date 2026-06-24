@@ -25,6 +25,7 @@ namespace WiFiManagerModule {
     String scanJson();
 
     void setManualTime(int year, int month, int day, int hour, int minute, bool dst);
+    void applyTimezone(); // Apply current config.timezone to system TZ
 
     WifiStatus getStatus();
 

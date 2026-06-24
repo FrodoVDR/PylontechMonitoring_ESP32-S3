@@ -1,6 +1,9 @@
 <div class="content">
 
     <h2>Statistic</h2>
+    <div id="cache_ts_stat" style="margin-bottom:10px;color:#666;font-size:13px;">Cache: -</div>
+    <div id="stat_status_text" style="margin-bottom:10px;color:#0a4a7a;font-size:13px;">Status: -</div>
+    <div id="stat_source_text" style="margin-bottom:10px;color:#3b3b3b;font-size:13px;">Quelle: -</div>
 
     <div class="conn-grid-3">
 
@@ -37,6 +40,8 @@
 	
 	<table id="stat_table"></table>
 	<br>
+	<button onclick="refreshStat()">Daten abrufen</button>
+	&nbsp;
 	<button onclick="saveStatSettings()">Speichern</button>
 
 

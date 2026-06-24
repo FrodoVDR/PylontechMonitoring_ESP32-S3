@@ -1,11 +1,48 @@
 function sanitize(str){
-    return str.replace(/[^A-Za-z0-9_]/g, "");
+    // Remove control chars, delimiter, special chars, excessive spaces, accents
+    let s = (str || "")
+        .replace(/[\x00-\x1F\x7F]/g, "")  // Control chars
+        .replace(/\|/g, "")                 // Field delimiter
+        .replace(/[^\w\s\-\.]/g, "")      // Keep only word chars, space, dash, dot
+        .replace(/\s+/g, "")                // Remove spaces completely
+        .replace(/^_+|_+$/g, "")             // Trim underscores
+        .trim();
+    return s.length > 0 ? s : "field";
+}
+
+function renderCacheTs(elementId, ts) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!ts) {
+        el.innerText = "Cache: kein Eintrag (UART-Abruf läuft)";
+        return;
+    }
+    const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    el.innerText = "Cache-Alter: " + secs + "s";
+}
+
+function renderBatStatus(msg) {
+    const el = document.getElementById("bat_status_text");
+    if (!el) return;
+    el.innerText = "Status: " + (msg || "-");
+}
+
+function renderBatSource(src) {
+    const el = document.getElementById("bat_source_text");
+    if (!el) return;
+    if (src === "cache") el.innerText = "Quelle: NVS-Cache";
+    else if (src === "uart") el.innerText = "Quelle: UART (frisch)";
+    else el.innerText = "Quelle: keine Daten";
 }
 
 function batLoad() {
     fetch("/api/bat/cells")
         .then(r => r.json())
         .then(j => {
+
+            renderCacheTs("cache_ts_bat", j.cacheTimestamp || 0);
+            renderBatStatus(j.statusText || "-");
+            renderBatSource(j.dataSource || "none");
 
             // Config
             document.getElementById("enable_bat").checked = j.config.enableBat;
@@ -16,6 +53,12 @@ function batLoad() {
             // Tabelle
             let table = document.getElementById("bat_table");
             table.innerHTML = "";
+
+            if (!j.headers || j.headers.length === 0) {
+                table.innerHTML = '<tr><td colspan="7" style="color:#aaa">Keine Cache-Daten vorhanden. BAT wird automatisch abgerufen…</td></tr>';
+                setTimeout(() => pollBat(40), 500);
+                return;
+            }
 
             // gespeicherte Felder
             let saved = {};
@@ -42,32 +85,17 @@ function batLoad() {
                     send    = saved[name].sendPayload;
                 }
                 else {
-                    // Autodetect
-                    let n = name.toLowerCase();
-                    let r = raw.toLowerCase();
-
-                    if (r.includes("%")) {
-                        factor = "1"; unit = "%";
-                    }
-                    else if (r.includes("mah")) {
-                        factor = "0.001"; unit = "Ah";
-                    }
-                    else if (isNaN(parseFloat(r))) {
-                        factor = "text"; unit = "";
-                    }
-                    else if (n.includes("volt")) {
-                        factor = "0.001"; unit = "V";
-                    }
-                    else if (n.includes("curr")) {
-                        factor = "0.001"; unit = "A";
-                    }
-                    else if (n.includes("temp") || n.includes("tempr")) {
-                        factor = "0.001"; unit = "°C";
-                    }
+                    // Verwende nur Defaults, kein Autodetect
+                    // (autodetect verursacht verlorene Häkchen beim Speichern)
+                    factor = "1";
+                    unit   = "";
+                    mqtt   = false;
+                    send   = false;
                 }
 
                 // Tabelle rendern
                 let row = document.createElement("tr");
+                row.dataset.fieldName = name;
                 row.innerHTML = `
                     <td>${name}</td>
                     <td><input id="disp_${name}" value="${display}"></td>
@@ -146,7 +174,8 @@ function batSave() {
     };
 
     document.querySelectorAll("#bat_table tr").forEach(row => {
-        let name = row.cells[0].innerText;
+        let name = row.dataset.fieldName || row.cells[0].textContent || "";
+        if (!name) return;
         let disp = sanitize(document.getElementById("disp_" + name).value);
 
         data.fields.push({
@@ -164,6 +193,32 @@ function batSave() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(data)
     }).then(() => alert("Gespeichert"));
+}
+
+function refreshBat() {
+    let table = document.getElementById("bat_table");
+    table.innerHTML = '<tr><td colspan="7" style="color:#aaa">Daten werden abgerufen…</td></tr>';
+    fetch('/api/bat/refresh', { method: 'POST' })
+        .then(() => pollBat(40));
+}
+
+function pollBat(retries) {
+    if (retries <= 0) {
+        renderBatStatus("Timeout: kein BAT-Datensatz empfangen");
+        const table = document.getElementById("bat_table");
+        table.innerHTML = '<tr><td colspan="7" style="color:orange">Keine Antwort auf <b>bat</b>-Befehl. Bitte in der Battery Console \'bat 1\' manuell testen.</td></tr>';
+        return;
+    }
+    fetch("/api/bat/cells")
+        .then(r => r.json())
+        .then(j => {
+            if (j.headers && j.headers.length > 0) {
+                batLoad();
+            } else {
+                setTimeout(() => pollBat(retries - 1), 2000);
+            }
+        })
+        .catch(() => setTimeout(() => pollBat(retries - 1), 2000));
 }
 
 batLoad();

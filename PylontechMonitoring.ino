@@ -1,5 +1,5 @@
 // =========================
-// PylontechMonitoring (ESP32-S)
+// PylontechMonitoring (ESP32-S3 WROOM)
 // Clean architecture with 2 tasks:
 //   - Task 1 (Core 0): Real‑time pipeline (UART + Parser)
 //   - Task 2 (Core 1): Non‑critical pipeline (Scheduler + MQTT + Webserver + WiFi)
@@ -13,6 +13,7 @@
 #include <Preferences.h>
 #include <TimeLib.h>
 #include <SPIFFS.h>
+#include <map>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
@@ -20,6 +21,7 @@
 #include "esp_log.h"
 #include "config.h"
 #include "py_wifimanager.h"
+#include "py_eth.h"
 #include "wp_webserver.h"
 #include "py_systemmanager.h"
 #include "py_uart.h"
@@ -30,6 +32,7 @@
 #include "py_log.h"
 #include "py_mqtt.h"
 #include "py_display.h"
+#include "web/api_cache.h"  // für apiCacheInvalidateOnFirmwareChange
 
 // =========================
 //  Global Data Structures
@@ -52,16 +55,112 @@ PyUart py_uart;
 extern PyScheduler py_scheduler;
 extern PyMqtt py_mqtt;
 
+// Runtime telemetry counters (Task1 writes, Task2 reads)
+volatile uint32_t g_uartFailCount = 0;
+volatile uint32_t g_retryQueuedCount = 0;
+volatile uint32_t g_retryLimitCount = 0;
+
+// Persistent crash breadcrumbs (survive PANIC reset)
+RTC_NOINIT_ATTR uint32_t g_rtcLastStage;
+RTC_NOINIT_ATTR uint32_t g_rtcCrashCount;
+RTC_NOINIT_ATTR uint32_t g_rtcCrashMagic;
+// Latched stage of the LAST real crash (only written on PANIC/WDT reset, so it
+// survives intervening clean/OTA reboots that would overwrite g_rtcLastStage).
+RTC_NOINIT_ATTR uint32_t g_rtcCrashStage;
+
+static constexpr uint32_t RTC_CRASH_MAGIC = 0x504D4352; // "PMCR"
+
+// Boot-time snapshot of the reset reason + last crash breadcrumb, captured
+// once in setup() so it can be reported via /api/monitoring at any time
+// (the web-log ring buffer rotates the boot lines away within minutes).
+String g_resetReasonStr = "UNKNOWN";
+uint32_t g_bootCrashStage = 0;
+const char* g_bootCrashStageName = "unknown";
+uint32_t g_bootCrashCount = 0;
+
+static inline void setCrashStage(uint32_t stage) {
+    g_rtcLastStage = stage;
+}
+
+static const char* crashStageName(uint32_t stage) {
+    switch (stage) {
+        case 10:  return "setup:start";
+        case 20:  return "setup:config_loaded";
+        case 30:  return "setup:uart_scheduler_ready";
+        case 40:  return "setup:net_ready";
+        case 50:  return "setup:tasks_started";
+        case 100: return "rt:hub_idle";
+        case 110: return "rt:wait_uart_ready";
+        case 120: return "rt:wait_uart_busy";
+        case 130: return "rt:wait_queue";
+        case 140: return "rt:cmd_popped";
+        case 150: return "rt:uart_send";
+        case 160: return "rt:uart_failed";
+        case 170: return "rt:uart_ok";
+        case 200: return "nrt:scheduler";
+        case 210: return "nrt:mqtt_loop";
+        case 220: return "nrt:web_loop";
+        case 230: return "nrt:sys_loop";
+        default:  return "unknown";
+    }
+}
+
 // =========================
  //  Task 1: Real‑Time Pipeline (Core 0)
  //  UART → Parser → Queue
  // =========================
 void realtimeTask(void* parameter) {
+    // Retry state for fragile module commands (INFO + BAT + PWR).
+    uint8_t infoRetryCount[MAX_BATTERY_MODULES + 1] = {0};
+    uint8_t batRetryCount[MAX_BATTERY_MODULES + 1] = {0};
+    uint8_t pwrRetryCount = 0;
+
+    auto extractModuleIndex = [](const String& cmd) -> int {
+        if (cmd.startsWith("stat ") || cmd.startsWith("info ")) {
+            return cmd.substring(5).toInt();
+        }
+        if (cmd.startsWith("bat ")) {
+            return cmd.substring(4).toInt();
+        }
+        return -1;
+    };
 
     for (;;) {
 
+        // -------------------------------------------------------
+        // HUB-MODUS: passive listening only – NEVER send commands
+        // -------------------------------------------------------
+        if (g_batteryMode == BatteryMode::HUB) {
+            setCrashStage(100);
+            // Flush any commands that were queued before mode was locked
+            // (e.g. the initial "pwr" from setup) – do NOT send them.
+            if (py_scheduler.hasQueuedCommand()) {
+                py_scheduler.clearQueue();
+            }
+
+            // Read passively from Serial2; parse when a full frame arrives.
+            if (py_uart.pollHubFrame()) {
+                BatteryStack stack;
+                std::vector<BatteryModule> mods;
+                ParseResult r = parsePwrFrame(py_uart.getLastRawFrame(), stack, mods);
+                if (r == PARSE_OK) {
+                    if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        PwrBuffer* target = pwrUseA ? &pwrB : &pwrA;
+                        target->stack   = stack;
+                        target->modules = mods;
+                        pwrUseA = !pwrUseA;
+                        xSemaphoreGive(g_pwrMutex);
+                    }
+                    parserHasData = true;
+                }
+            }
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+            continue;
+        }
+
         // 1) UART must be ready
         if (!py_uart.isReady()) {
+            setCrashStage(110);
             py_uart.begin(16, 17);
             vTaskDelay(100);
             continue;
@@ -69,12 +168,14 @@ void realtimeTask(void* parameter) {
 
         // 2) If UART is busy, wait
         if (py_uart.isBusy()) {
+            setCrashStage(120);
             vTaskDelay(1);
             continue;
         }
 
         // 3) Check if scheduler has a command
         if (!py_scheduler.hasQueuedCommand()) {
+            setCrashStage(130);
             vTaskDelay(1);
             continue;
         }
@@ -82,30 +183,96 @@ void realtimeTask(void* parameter) {
         // 4) Pop next command
         String cmd = py_scheduler.popNextCommand();
         if (cmd.length() == 0) {
+            setCrashStage(140);
             vTaskDelay(1);
             continue;
         }
 
         Log(LOG_INFO, "Task1: executing command: " + cmd);
 
-        // 5) Execute UART command (blocking allowed)
+        // 5) Execute UART command (blocking, parser runs inside)
+        setCrashStage(150);
         bool ok = py_uart.sendCommand(cmd.c_str());
 
-        if (!ok || !py_uart.hasFrame()) {
+        if (!ok) {
+            setCrashStage(160);
             Log(LOG_WARN, "Task1: UART failed for command: " + cmd);
+            g_uartFailCount++;
+            py_scheduler.reportCommandResult(cmd, false);
+
+            int moduleIndex = extractModuleIndex(cmd);
+            uint8_t* retrySlot = nullptr;
+            if (moduleIndex >= 1 && moduleIndex <= MAX_BATTERY_MODULES) {
+                if (cmd.startsWith("info ")) retrySlot = &infoRetryCount[moduleIndex];
+                else if (cmd.startsWith("bat ")) retrySlot = &batRetryCount[moduleIndex];
+            }
+
+            // Fast self-healing for transient PWR truncation.
+            if (cmd == "pwr") {
+                if (pwrRetryCount < 1) {
+                    pwrRetryCount++;
+                    py_scheduler.enqueue("pwr");
+                    g_retryQueuedCount++;
+                    Log(LOG_WARN, "Task1: retry queued for command: pwr");
+                } else {
+                    pwrRetryCount = 0;
+                    g_retryLimitCount++;
+                    Log(LOG_WARN, "Task1: retry limit reached for command: pwr");
+                }
+            }
+
+            if (retrySlot != nullptr) {
+                // Cap BAT retries low so one flaky module (incomplete frames)
+                // cannot monopolise the single realtimeTask and starve STAT/INFO.
+                // The normal sweep re-queries the module next cycle anyway.
+                uint8_t retryLimit = cmd.startsWith("bat ") ? 2 : 2;
+                if (*retrySlot < retryLimit) {
+                    (*retrySlot)++;
+                    if (cmd.startsWith("bat ")) {
+                        py_uart.recoverConsole();
+                    }
+                    py_scheduler.enqueue(cmd);
+                    g_retryQueuedCount++;
+                    Log(LOG_WARN, "Task1: retry queued for command: " + cmd);
+                } else {
+                    *retrySlot = 0;
+                    g_retryLimitCount++;
+                    Log(LOG_WARN, "Task1: retry limit reached for command: " + cmd);
+                }
+            }
+
             py_scheduler.lastCommandFinished = millis();
-            vTaskDelay(1);
+            // Give the BMS time to recover after a failed command before retrying.
+            // STAT/INFO keep the longer settle; BAT/PWR use a shorter one so a
+            // flaky module wastes less of the realtimeTask's single-threaded budget.
+            int failSettleMs = (cmd.startsWith("stat ") || cmd.startsWith("info ")) ? 4000 : 2000;
+            vTaskDelay(failSettleMs / portTICK_PERIOD_MS);
             continue;
         }
 
-        // 6) Get raw frame (Parser läuft in PyUart)
-        String raw = py_uart.getFrame();
+        // Command succeeded: clear retry state.
+        setCrashStage(170);
+        int moduleIndex = extractModuleIndex(cmd);
+        if (moduleIndex >= 1 && moduleIndex <= MAX_BATTERY_MODULES) {
+            if (cmd.startsWith("info ")) infoRetryCount[moduleIndex] = 0;
+            else if (cmd.startsWith("bat ")) batRetryCount[moduleIndex] = 0;
+        }
+        if (cmd == "pwr") pwrRetryCount = 0;
 
+        py_scheduler.reportCommandResult(cmd, true);
+
+        // 6) Frame was already parsed inside sendCommand()
         // 7) Mark command finished
-        py_scheduler.lastCommandFinished =millis();
+        py_scheduler.lastCommandFinished = millis();
 
-        // 8) Small delay
-        vTaskDelay(1);
+        // 8) Inter-command delay: INFO/STAT need more settle time than PWR/BAT.
+        int settleMs = 1500;
+        if (cmd.startsWith("stat ") || cmd.startsWith("info ")) {
+            settleMs = 3500;  // Increased from 2500 for better BMS timing
+        } else if (cmd.startsWith("bat ")) {
+            settleMs = 2200;
+        }
+        vTaskDelay(settleMs / portTICK_PERIOD_MS);
     }
 }
 
@@ -121,12 +288,14 @@ void noncriticalTask(void* parameter) {
     unsigned long lastWeb   = 0;
     unsigned long lastSys   = 0;
     unsigned long lastRam   = 0;
+    unsigned long lastSchedDiag = 0;
 
     for (;;) {
         unsigned long now = millis();
 
         // 1) Scheduler
         if (now - lastSched >= 20) {
+            setCrashStage(200);
             lastSched = now;
             py_scheduler.loop();
         }
@@ -138,20 +307,24 @@ void noncriticalTask(void* parameter) {
 
         // 3) MQTT internal
         if (now - lastMqtt >= 20) {
+            setCrashStage(210);
             lastMqtt = now;
             py_mqtt.loop();
         }
 
         // 4) Webserver
         if (now - lastWeb >= 20) {
+            setCrashStage(220);
             lastWeb = now;
             WebServerModule_handle();
         }
 
-        // 5) WiFi + System
+        // 5) WiFi + Ethernet + System
         if (now - lastSys >= 20) {
+            setCrashStage(230);
             lastSys = now;
             WiFiManagerModule::loop();
+            EthManagerModule::loop();
             SystemManager::loop();
         }
 
@@ -172,35 +345,56 @@ void noncriticalTask(void* parameter) {
             }
         }
 
-        // Display-Update (NICHT im Debug-Block!)
-        if (parserHasData) {
-            auto pwr = pwrUseA ? pwrA : pwrB;
-
-            if (!pwr.modules.empty()) {
-                auto &s = pwr.stack;
-
-                display.updatePwr(
-                    s.avgVoltage_mV,
-                    s.totalCurrent_mA,
-                    s.temperature,
-                    s.soc
-                );
-            }
+        // 7) Scheduler/UART telemetry (every 30 s)
+        if (now - lastSchedDiag >= 30000) {
+            lastSchedDiag = now;
+            Log(LOG_INFO,
+                String("Diag: q=") + String((uint32_t)py_scheduler.queuedCount()) +
+                " enq=" + String(py_scheduler.enqueueCount()) +
+                " pop=" + String(py_scheduler.popCount()) +
+                " dropDup=" + String(py_scheduler.dedupeDropCount()) +
+                " dropFull=" + String(py_scheduler.fullDropCount()) +
+                " uartFail=" + String(g_uartFailCount) +
+                " retryQ=" + String(g_retryQueuedCount) +
+                " retryLim=" + String(g_retryLimitCount));
         }
 
-        bool apMode = (WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA);
-
-        display.updateWifi(
-            WiFi.status() == WL_CONNECTED,
-            WiFi.localIP().toString(),
-            WiFi.RSSI(),
-            apMode
-        );
-
-        // Display nur alle 500 ms aktualisieren
+        // Display nur alle 500 ms aktualisieren (WiFi-Abfragen erzeugen IPC-Calls)
         static unsigned long lastDisplay = 0;
         if (now - lastDisplay >= 500) {
             lastDisplay = now;
+
+            // Nur die 4 benötigten Integer lesen – KEIN volles PwrBuffer-Copy!
+            // auto pwr = pwrUseA ? pwrA : pwrB  wäre eine unsynchronisierte Kopie
+            // von 8 BatteryModules mit std::map (Race condition + Heap-Fragmentation).
+            {
+                int avgV = 0, totC = 0, temp = 0, soc = 0;
+                bool hasPwrDisplay = false;
+                if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    const PwrBuffer& buf = pwrUseA ? pwrA : pwrB;
+                    if (!buf.modules.empty()) {
+                        avgV = buf.stack.avgVoltage_mV;
+                        totC = buf.stack.totalCurrent_mA;
+                        temp = buf.stack.temperature;
+                        soc  = buf.stack.soc;
+                        hasPwrDisplay = true;
+                    }
+                    xSemaphoreGive(g_pwrMutex);
+                }
+                if (hasPwrDisplay) {
+                    display.updatePwr(avgV, totC, temp, soc);
+                }
+            }
+
+            bool apMode = (WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA);
+
+            display.updateWifi(
+                WiFi.status() == WL_CONNECTED,
+                WiFi.localIP().toString(),
+                WiFi.RSSI(),
+                apMode
+            );
+
             display.loop();
         }
 
@@ -217,10 +411,78 @@ void setup() {
     Serial.begin(115200);
     delay(100);
 
+    // RTC_NOINIT content is undefined after cold boot; initialize once via magic.
+    if (g_rtcCrashMagic != RTC_CRASH_MAGIC) {
+        g_rtcLastStage = 0;
+        g_rtcCrashCount = 0;
+        g_rtcCrashStage = 0;
+        g_rtcCrashMagic = RTC_CRASH_MAGIC;
+    }
+
+    // Log-Mutex initialisieren (MUSS vor dem ersten Log()-Aufruf stehen)
+    WebLogInit();
+
+    // Reset-Grund im Web-Log festhalten (sichtbar in UI ohne serielle Konsole)
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        const char* rrStr = "UNKNOWN";
+        switch (rr) {
+            case ESP_RST_POWERON:    rrStr = "POWER_ON";      break;
+            case ESP_RST_EXT:        rrStr = "EXT_RESET";     break;
+            case ESP_RST_SW:         rrStr = "SOFTWARE";      break;
+            case ESP_RST_PANIC:      rrStr = "PANIC/EXCEPTION"; break;
+            case ESP_RST_INT_WDT:    rrStr = "INT_WATCHDOG";  break;
+            case ESP_RST_TASK_WDT:   rrStr = "TASK_WATCHDOG"; break;
+            case ESP_RST_WDT:        rrStr = "OTHER_WDT";     break;
+            case ESP_RST_DEEPSLEEP:  rrStr = "DEEP_SLEEP";    break;
+            case ESP_RST_BROWNOUT:   rrStr = "BROWNOUT";      break;
+            default: break;
+        }
+        Log(LOG_WARN, String("*** RESET REASON: ") + rrStr + " ***");
+        if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT || rr == ESP_RST_WDT) {
+            g_rtcCrashCount++;
+            // Latch the stage of THIS crash so it survives later clean reboots.
+            g_rtcCrashStage = g_rtcLastStage;
+            Log(LOG_WARN,
+                String("*** LAST CRASH STAGE: ") + String(g_rtcCrashStage) +
+                " (" + String(crashStageName(g_rtcCrashStage)) + ")" +
+                " crashes=" + String(g_rtcCrashCount) + " ***");
+        }
+
+        // Snapshot for /api/monitoring (survives log-buffer rotation and clean
+        // reboots). g_rtcCrashStage is latched at crash time, so it always
+        // reports the LAST real crash regardless of intervening OTA reboots.
+        g_resetReasonStr      = rrStr;
+        g_bootCrashStage      = g_rtcCrashStage;
+        g_bootCrashStageName  = crashStageName(g_rtcCrashStage);
+        g_bootCrashCount      = g_rtcCrashCount;
+    }
+
+    // Mark the current boot after the previous crash state has been reported.
+    setCrashStage(10);
+
     Log(LOG_INFO, "System booting...");
+
+    // Mutexes für thread-sicheren Zugriff auf lastParsedStat / lastParsedInfo
+    g_statMutex = xSemaphoreCreateMutex();
+    g_infoMutex = xSemaphoreCreateMutex();
+    g_batMutex  = xSemaphoreCreateMutex();
+    g_pwrMutex  = xSemaphoreCreateMutex();
+    g_healthMutex = xSemaphoreCreateMutex();
 
     // Load configuration (deine bestehende load() kümmert sich um alles)
     config.load();
+    
+    // Debug: Syslog-Einstellungen nach dem Laden loggen
+    Log(LOG_INFO, 
+        String("Syslog loaded: enabled=") + 
+        (config.syslogEnabled ? "true" : "false") +
+        " server=" + config.syslogServer + 
+        " port=" + String(config.syslogPort));
+
+    // Keep syslog state unchanged after panic/watchdog resets so crash diagnostics
+    // continue to be exported remotely across reboot cycles.
+    setCrashStage(20);
 
     // Create MQTT queue
     mqttQueue = xQueueCreate(
@@ -235,6 +497,7 @@ void setup() {
     // UART + Scheduler
     py_uart.begin(16, 17);      // RX=16, TX=17
     py_scheduler.begin(&py_uart);  
+    setCrashStage(30);
 
     // Initial command
     py_scheduler.enqueue("pwr");
@@ -246,8 +509,12 @@ void setup() {
     // WiFi + OTA + NTP
     WiFiManagerModule::begin();
 
+    // Ethernet (only active when config.useEthernet == true)
+    EthManagerModule::begin();
+
     // MQTT
     py_mqtt.begin();
+    setCrashStage(40);
 
     // SPIFFS
     if (!SPIFFS.begin(false)) {
@@ -259,6 +526,9 @@ void setup() {
 
     // Webserver
     WebServerModule_begin();
+
+    // Invalidate API caches if firmware version changed since last boot
+    apiCacheInvalidateOnFirmwareChange(config.getFirmwareVersionWithBuild());
 
     // Webserver command callback
     WebServerModule_setCommandCallback([](const String &cmd){
@@ -278,7 +548,7 @@ void setup() {
     xTaskCreatePinnedToCore(
         realtimeTask,
         "RealTime Task",
-        8192,
+        24576,
         NULL,
         2,          // higher priority
         NULL,
@@ -289,12 +559,13 @@ void setup() {
     xTaskCreatePinnedToCore(
         noncriticalTask,
         "NonCritical Task",
-        8192,
+        24576,
         NULL,
         1,          // normal priority
         NULL,
         0           // Core 0
     );
+    setCrashStage(50);
 
     Log(LOG_INFO, "Setup complete");
 }

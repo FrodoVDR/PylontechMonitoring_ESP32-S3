@@ -1,0 +1,81 @@
+[
+    {
+        "id": "bat_mqtt_in_01",
+        "type": "mqtt in",
+        "z": "c6f949d3f50478dc",
+        "name": "BAT in",
+        "topic": "pylontech/bat/#",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "52ab07d4.e2ee48",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 1780,
+        "y": 260,
+        "wires": [
+            [
+                "bat_validate_fn_01"
+            ]
+        ]
+    },
+    {
+        "id": "bat_validate_fn_01",
+        "type": "function",
+        "z": "c6f949d3f50478dc",
+        "name": "BAT validieren/bereinigen",
+        "func": "const P=\"pylontech/bat\";\nconst S={Battery:{t:\"i\",lo:0,hi:14},Volt:{t:\"f\",lo:2,hi:4},Curr:{t:\"f\",lo:-250,hi:250},Tempr:{t:\"f\",lo:-20,hi:60},SOC:{t:\"f\",lo:0,hi:100},Coulomb:{t:\"f\",lo:0,hi:100},BAL:{t:\"e\",v:[\"N\",\"Y\"]},Number:{t:\"i\",lo:1,hi:16}};\nfunction rej(r,d){node.warn(\"BAT verworfen: \"+r+(d!==undefined?\" | \"+d:\"\"));node.status({fill:\"red\",shape:\"ring\",text:r});return [null,{topic:msg.topic,payload:{error:r,detail:d,original:msg.payload}}];}\nlet x=msg.payload;\nif(Buffer.isBuffer(x))x=x.toString(\"utf8\");\nif(typeof x===\"string\"){const s=x.trim();if(s.charAt(0)!==\"{\")return rej(\"kein JSON-Objekt\",s.slice(0,60));try{x=JSON.parse(s);}catch(e){return rej(\"JSON-Parsefehler\",e.message);}}\nif(typeof x!==\"object\"||x===null||Array.isArray(x))return rej(\"Payload kein Objekt\");\nconst t=String(msg.topic||\"\");\nif(t.indexOf(P+\"/\")!==0)return rej(\"unerwartetes Topic\",t);\nconst m=t.match(/\\/(\\d{1,2})\\/[^/]+$/);\nif(!m)return rej(\"Topic-Form ungueltig\",t);\nconst tm=parseInt(m[1],10);\nfor(const k of Object.keys(x))if(!Object.prototype.hasOwnProperty.call(S,k))return rej(\"unbekanntes Feld '\"+k+\"'\");\nconst c={};\nfor(const k of Object.keys(S)){\n  if(!Object.prototype.hasOwnProperty.call(x,k))return rej(\"Feld fehlt: \"+k);\n  const r=S[k];let v=x[k];\n  if(r.t===\"e\"){const sv=String(v).trim().toUpperCase();if(r.v.indexOf(sv)<0)return rej(\"Wert ungueltig fuer \"+k,v);c[k]=sv;continue;}\n  if(typeof v===\"string\")v=v.trim();\n  const n=Number(v);\n  if(v===\"\"||v===null||typeof v===\"boolean\"||!isFinite(n))return rej(\"nicht-numerisch: \"+k,x[k]);\n  if(r.t===\"i\"&&!Number.isInteger(n))return rej(k+\" nicht ganzzahlig\",x[k]);\n  if(n<r.lo||n>r.hi)return rej(k+\" ausserhalb [\"+r.lo+\"..\"+r.hi+\"]\",x[k]);\n  c[k]=n;\n}\nif(c.Number!==tm)return rej(\"Number != Topic-Modul\",c.Number+\" vs \"+tm);\nmsg.payload=c;\nnode.status({fill:\"green\",shape:\"dot\",text:\"ok M\"+c.Number+\" C\"+c.Battery});\nreturn [msg,null];",
+        "outputs": 2,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 2010,
+        "y": 260,
+        "wires": [
+            [
+                "bat_influx_out_01"
+            ],
+            [
+                "bat_reject_debug_01"
+            ]
+        ]
+    },
+    {
+        "id": "bat_influx_out_01",
+        "type": "influxdb out",
+        "z": "c6f949d3f50478dc",
+        "influxdb": "2b363ca2bdec689c",
+        "name": "",
+        "measurement": "bat",
+        "precision": "",
+        "retentionPolicy": "",
+        "database": "database",
+        "precisionV18FluxV20": "ms",
+        "retentionPolicyV18Flux": "",
+        "org": "organisation",
+        "bucket": "bucket",
+        "x": 2270,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "bat_reject_debug_01",
+        "type": "debug",
+        "z": "c6f949d3f50478dc",
+        "name": "BAT verworfen",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "payload.error",
+        "statusType": "auto",
+        "x": 2270,
+        "y": 300,
+        "wires": []
+    }
+]

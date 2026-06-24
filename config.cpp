@@ -3,15 +3,172 @@
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <SPIFFS.h>
+#include <cstring>
+#include <esp_app_desc.h>
 
 
 
 AppConfig config;
 
+static int monthFromBuildDate(const char* mon) {
+    if (strcmp(mon, "Jan") == 0) return 1;
+    if (strcmp(mon, "Feb") == 0) return 2;
+    if (strcmp(mon, "Mar") == 0) return 3;
+    if (strcmp(mon, "Apr") == 0) return 4;
+    if (strcmp(mon, "May") == 0) return 5;
+    if (strcmp(mon, "Jun") == 0) return 6;
+    if (strcmp(mon, "Jul") == 0) return 7;
+    if (strcmp(mon, "Aug") == 0) return 8;
+    if (strcmp(mon, "Sep") == 0) return 9;
+    if (strcmp(mon, "Oct") == 0) return 10;
+    if (strcmp(mon, "Nov") == 0) return 11;
+    if (strcmp(mon, "Dec") == 0) return 12;
+    return 1;
+}
+
+String AppConfig::getBuildNumber() const {
+    // Use image ELF SHA from running firmware metadata.
+    // This changes whenever the compiled firmware image changes and avoids
+    // stale values caused by incremental compilation of a single source file.
+    const esp_app_desc_t* app = esp_app_get_description();
+    if (app) {
+        bool anyNonZero = false;
+        for (int i = 0; i < 32; ++i) {
+            if (app->app_elf_sha256[i] != 0) {
+                anyNonZero = true;
+                break;
+            }
+        }
+
+        if (anyNonZero) {
+            // 12 hex chars from first 6 bytes keep the UI short and stable.
+            char buf[13];
+            for (int i = 0; i < 6; ++i) {
+                snprintf(&buf[i * 2], 3, "%02x", (unsigned int)app->app_elf_sha256[i]);
+            }
+            buf[12] = '\0';
+            return String(buf);
+        }
+    }
+
+    // Fallback: compile timestamp if app metadata is unavailable.
+    const char* d = __DATE__; // "Mmm dd yyyy"
+    const char* t = __TIME__; // "hh:mm:ss"
+
+    char mon[4] = { d[0], d[1], d[2], '\0' };
+    int month = monthFromBuildDate(mon);
+
+    int day = ((d[4] == ' ') ? 0 : (d[4] - '0')) * 10 + (d[5] - '0');
+    int year = (d[7] - '0') * 1000 + (d[8] - '0') * 100 + (d[9] - '0') * 10 + (d[10] - '0');
+
+    int hour = (t[0] - '0') * 10 + (t[1] - '0');
+    int min  = (t[3] - '0') * 10 + (t[4] - '0');
+    int sec  = (t[6] - '0') * 10 + (t[7] - '0');
+
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%04d%02d%02d%02d%02d%02d", year, month, day, hour, min, sec);
+    return String(buf);
+}
+
+String AppConfig::getFirmwareVersionWithBuild() const {
+    return firmwareVersion + "+b" + getBuildNumber();
+}
+
+// Check if a given date is within DST period (European rule: last Sunday of March to last Sunday of October)
+// Returns offset considering DST
+int AppConfig::getTimezoneOffsetHours() const {
+    String posix = findPosixForTimezone(timezone);
+
+    // POSIX sign is INVERTED vs real UTC offset:
+    //   "CET-1" = UTC+1,  "EST+5" = UTC-5,  "GMT0" = UTC+0
+    int stdOffset = 0;
+    bool posixMinus = false;
+
+    for (int i = 0; i < (int)posix.length(); i++) {
+        char c = posix[i];
+        if (isdigit(c)) {
+            stdOffset = c - '0';
+            if (i > 0 && posix[i-1] == '-') posixMinus = true;
+            break;
+        }
+    }
+    if (!posixMinus) stdOffset = -stdOffset;  // flip: bare/+ → negative real offset
+
+    // Automatic DST: if POSIX string has transition rules (contains ','), apply +1h in summer
+    // Does NOT require manual_dst – works for NTP mode automatically
+    if (posix.indexOf(',') >= 0) {
+        time_t now = time(NULL);
+        struct tm t;
+        gmtime_r(&now, &t);
+        int month = t.tm_mon + 1;
+        int day   = t.tm_mday;
+        // European DST approx: March 25 – October 24
+        bool inDst = (month > 3 && month < 10) ||
+                     (month == 3  && day >= 25) ||
+                     (month == 10 && day <= 24);
+        if (inDst) return stdOffset + 1;
+    }
+
+    return stdOffset;
+}
+
 
 static const size_t CHUNK_SIZE = 1500;
+static const int MAX_JSON_CHUNKS = 80;  // Reduziert um Overflow zu vermeiden
+
+static const size_t DOC_CAP_PW_FIELDS = 16384;
+static const size_t DOC_CAP_BAT_FIELDS = 24576;
+static const size_t DOC_CAP_STAT_FIELDS = 32768;
+static const size_t DOC_CAP_INFO_FIELDS = 32768;
+
+static size_t jsonDocCapacityForPayload(size_t payloadLen,
+                                        size_t minCap,
+                                        size_t maxCap) {
+    size_t cap = payloadLen + 4096;
+    if (cap < minCap) cap = minCap;
+    if (cap > maxCap) cap = maxCap;
+    return cap;
+}
+
+static unsigned long clampIntervalMs(unsigned long value,
+                                     unsigned long minMs,
+                                     unsigned long maxMs,
+                                     unsigned long fallbackMs,
+                                     const char* label) {
+    if (value < minMs || value > maxMs) {
+        Log(LOG_WARN,
+            String("Config: ") + label + " interval out of range (" +
+            String(value) + " ms), using " + String(fallbackMs) + " ms");
+        return fallbackMs;
+    }
+    return value;
+}
 
 HealthStatus health;
+
+static void ensureDefaultPwrFields(std::map<String, FieldConfig>& fields) {
+    if (!fields.empty()) return;
+
+    auto add = [&](const String& key,
+                   const String& label,
+                   const String& factor,
+                   const String& unit,
+                   bool active) {
+        FieldConfig f;
+        f.label = label;
+        f.display = label;
+        f.factor = factor;
+        f.unit = unit;
+        f.mqtt = active;
+        f.send = active;
+        fields[key] = f;
+    };
+
+    add("Volt",    "Voltage",     "0.001", "V",  true);
+    add("Curr",    "Current",     "0.001", "A",  true);
+    add("Tempr",   "Temperature", "0.001", "°C", true);
+    add("Coulomb", "SOC",         "1",     "%",  true);
+}
 
 
 // ----------------------------------------------------
@@ -22,11 +179,18 @@ void AppConfig::saveJsonChunked(const char* ns, const char* prefix, const String
     Log(LOG_INFO, String("NVS-CHUNK: Saving JSON for namespace '") + ns + "', prefix '" + prefix + "'");
     Log(LOG_INFO, String("NVS-CHUNK: JSON length = ") + json.length());
 
+    size_t len = json.length();
+    size_t neededChunks = (len + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    if (neededChunks > (size_t)MAX_JSON_CHUNKS) {
+        Log(LOG_ERROR, String("NVS-CHUNK: payload too large for chunk limit, needed=") + neededChunks + ", max=" + MAX_JSON_CHUNKS);
+        return;
+    }
+
     Preferences p;
     p.begin(ns, false);
 
     // Alte Chunks entfernen
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < MAX_JSON_CHUNKS; i++) {
         String key = String(prefix) + "_" + i;
         if (p.isKey(key.c_str())) {
             p.remove(key.c_str());
@@ -35,8 +199,6 @@ void AppConfig::saveJsonChunked(const char* ns, const char* prefix, const String
 
     int index = 0;
     int written = 0;
-
-    size_t len = json.length();
 
     while (index * CHUNK_SIZE < len) {
 
@@ -74,7 +236,7 @@ String AppConfig::loadJsonChunked(const char* ns, const char* prefix) {
     p.begin(ns, true);
 
     String json = "";
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < MAX_JSON_CHUNKS; i++) {
         String key = String(prefix) + "_" + String(i);
         if (!p.isKey(key.c_str())) break;
         json += p.getString(key.c_str(), "");
@@ -170,6 +332,11 @@ void AppConfig::factoryDefaults() {
     mqtt.topicStat  = "stat";
     mqtt.mode       = "active";
 
+    // Syslog defaults
+    syslogEnabled = false;
+    syslogServer  = "";
+    syslogPort    = 514;
+
     // Hostname / AP
     hostname = generateHostname();
     apSSID   = hostname;
@@ -250,6 +417,20 @@ void AppConfig::loadSystemConfig() {
     gateway     = p.getString("net_gw", gateway);
     dns         = p.getString("net_dns", dns);
 
+    useEthernet    = p.getBool("eth_en",    useEthernet);
+    ethPhyAddr      = (int8_t)p.getChar("eth_phy",   ethPhyAddr);
+    ethMisoPin      = (int8_t)p.getChar("eth_miso",  ethMisoPin);
+    ethMosiPin      = (int8_t)p.getChar("eth_mosi",  ethMosiPin);
+    ethSclkPin      = (int8_t)p.getChar("eth_sclk",  ethSclkPin);
+    ethCsPin        = (int8_t)p.getChar("eth_cs",    ethCsPin);
+    ethRstPin       = (int8_t)p.getChar("eth_rst",   ethRstPin);
+    ethIntPin       = (int8_t)p.getChar("eth_int",   ethIntPin);
+    ethUseStaticIP  = p.getBool("eth_static",  ethUseStaticIP);
+    ethIpAddr       = p.getString("eth_ip",    ethIpAddr);
+    ethSubnetMask   = p.getString("eth_mask",  ethSubnetMask);
+    ethGateway      = p.getString("eth_gw",    ethGateway);
+    ethDns          = p.getString("eth_dns",   ethDns);
+
     ntpServer         = p.getString("ntp_srv", ntpServer);
     timezone          = p.getString("tz_name", timezone);
     daylightSaving    = p.getBool("tz_dst", daylightSaving);
@@ -288,6 +469,9 @@ void AppConfig::loadSystemConfig() {
     logWarn  = p.getBool("log_warn",  true);
     logError = p.getBool("log_error", true);
     logDebug = p.getBool("log_debug", false);
+    syslogEnabled = p.getBool("syslog_en", syslogEnabled);
+    syslogServer  = p.getString("syslog_srv", syslogServer);
+    syslogPort    = p.getUShort("syslog_port", syslogPort);
 
     p.end();
 
@@ -323,6 +507,20 @@ void AppConfig::saveSystemConfig() {
     p.putString("net_mask", subnetMask);
     p.putString("net_gw", gateway);
     p.putString("net_dns", dns);
+
+    p.putBool("eth_en",     useEthernet);
+    p.putChar("eth_phy",    ethPhyAddr);
+    p.putChar("eth_miso",   ethMisoPin);
+    p.putChar("eth_mosi",   ethMosiPin);
+    p.putChar("eth_sclk",   ethSclkPin);
+    p.putChar("eth_cs",     ethCsPin);
+    p.putChar("eth_rst",    ethRstPin);
+    p.putChar("eth_int",    ethIntPin);
+    p.putBool("eth_static", ethUseStaticIP);
+    p.putString("eth_ip",   ethIpAddr);
+    p.putString("eth_mask", ethSubnetMask);
+    p.putString("eth_gw",   ethGateway);
+    p.putString("eth_dns",  ethDns);
 
     p.putString("ntp_srv", ntpServer);
     p.putString("tz_name", timezone);
@@ -362,6 +560,9 @@ void AppConfig::saveSystemConfig() {
     p.putBool("log_warn",  logWarn);
     p.putBool("log_error", logError);
     p.putBool("log_debug", logDebug);
+    p.putBool("syslog_en", syslogEnabled);
+    p.putString("syslog_srv", syslogServer);
+    p.putUShort("syslog_port", syslogPort);
 
     p.end();
 }
@@ -375,6 +576,13 @@ void AppConfig::loadPwrConfig() {
 
     battery.intervalPwr = p.getULong("interval", battery.intervalPwr);
     battery.enableBat   = p.getBool("enabled", battery.enableBat);
+    battery.intervalPwr = clampIntervalMs(
+        battery.intervalPwr,
+        5000UL,        // 5s
+        3600000UL,     // 1h
+        60000UL,       // 60s default
+        "PWR"
+    );
 
     // NEW: Load thresholds
     battery.cellDiffWarn  = p.getFloat("cellDiffWarn",  battery.cellDiffWarn);
@@ -387,6 +595,13 @@ void AppConfig::savePwrConfig() {
     Preferences p;
     p.begin("battery_pwr", false);
 
+    battery.intervalPwr = clampIntervalMs(
+        battery.intervalPwr,
+        5000UL,
+        3600000UL,
+        60000UL,
+        "PWR"
+    );
     p.putULong("interval", battery.intervalPwr);
     p.putBool("enabled", battery.enableBat);
 
@@ -401,62 +616,148 @@ void AppConfig::savePwrConfig() {
 //  PWR FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::savePwrFields() {
-    DynamicJsonDocument doc(3000);
+    DynamicJsonDocument doc(DOC_CAP_PW_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 
     for (auto &kv : battery.fieldsPwr) {
         const String& name = kv.first;
         const FieldConfig& fc = kv.second;
+        JsonObject o = arr.createNestedObject();
+        o["name"]    = name;
+        o["display"] = fc.display;
+        o["factor"]  = fc.factor;
+        o["unit"]    = fc.unit;
+        o["mqtt"]    = fc.mqtt;
+        o["send"]    = fc.send;
+    }
 
-        String packed;
-        packed.reserve(80);
-        packed += name; packed += "|";
-        packed += fc.display; packed += "|";
-        packed += fc.factor; packed += "|";
-        packed += fc.unit; packed += "|";
-        packed += (fc.mqtt ? "1" : "0"); packed += "|";
-        packed += (fc.send ? "1" : "0");
-
-        arr.add(packed);
+    if (doc.overflowed()) {
+        Log(LOG_ERROR, "savePwrFields: JSON document overflow, aborting save");
+        return;
     }
 
     String json;
-    json.reserve(3000);
     serializeJson(doc, json);
-
     saveJsonChunked("battery_pwr", "pwr", json);
 }
 
 void AppConfig::loadPwrFields() {
     String json = loadJsonChunked("battery_pwr", "pwr");
-    if (json.length() == 0) return;
+    if (json.length() == 0) {
+        ensureDefaultPwrFields(battery.fieldsPwr);
+        return;
+    }
+    if (json.length() > 100000) {
+        Log(LOG_ERROR, "loadPwrFields: payload too large (" + String(json.length()) + "), keeping existing config");
+        ensureDefaultPwrFields(battery.fieldsPwr);
+        return;
+    }
 
-    DynamicJsonDocument doc(3000);
-    if (deserializeJson(doc, json)) return;
+    size_t docCap = jsonDocCapacityForPayload(json.length(), DOC_CAP_PW_FIELDS, 65536);
+    DynamicJsonDocument doc(docCap);
+    if (deserializeJson(doc, json)) {
+        Log(LOG_ERROR, "loadPwrFields: JSON deserialization failed (len=" + String(json.length()) + ", cap=" + String(docCap) + "), keeping existing config");
+        ensureDefaultPwrFields(battery.fieldsPwr);
+        return;
+    }
 
-    JsonArray arr = doc["fields"];
-    if (arr.isNull()) return;
+    // Primary format: {"fields":[...]}
+    JsonArray arr = doc["fields"].as<JsonArray>();
+    // Legacy format A: root is array
+    if (arr.isNull() && doc.is<JsonArray>()) {
+        arr = doc.as<JsonArray>();
+    }
+    if (arr.isNull() || arr.size() == 0) {
+        // Legacy format B: object map {"Volt":{...}, ...}
+        if (doc.is<JsonObject>()) {
+            JsonObject root = doc.as<JsonObject>();
+            bool loadedLegacyMap = false;
+
+            battery.fieldsPwr.clear();
+            for (JsonPair kv : root) {
+                const char* k = kv.key().c_str();
+                if (!k || strlen(k) == 0 || strcmp(k, "fields") == 0) continue;
+                if (!kv.value().is<JsonObject>()) continue;
+
+                JsonObject o = kv.value().as<JsonObject>();
+                FieldConfig fc;
+                fc.display = o["display"] | String(k);
+                fc.label   = fc.display;
+                fc.factor  = o["factor"] | "1";
+                fc.unit    = o["unit"] | "";
+                fc.mqtt    = o["mqtt"].isNull() ? (o["sendMQTT"] | false) : (o["mqtt"] | false);
+                fc.send    = o["send"].isNull() ? (o["sendPayload"] | false) : (o["send"] | false);
+                battery.fieldsPwr[String(k)] = fc;
+                loadedLegacyMap = true;
+            }
+
+            if (loadedLegacyMap) {
+                Log(LOG_WARN, "loadPwrFields: loaded legacy object-map format");
+                ensureDefaultPwrFields(battery.fieldsPwr);
+                return;
+            }
+        }
+
+        Log(LOG_WARN, "loadPwrFields: No fields array found");
+        ensureDefaultPwrFields(battery.fieldsPwr);
+        return;
+    }
 
     battery.fieldsPwr.clear();
 
     for (JsonVariant v : arr) {
-        const char* packed = v.as<const char*>();
-        if (!packed) continue;
+        String name;
+        String display;
+        String factor;
+        String unit;
+        bool mqtt = false;
+        bool send = false;
 
-        const char* p = packed;
+        if (v.is<JsonObject>()) {
+            JsonObject o = v.as<JsonObject>();
+            name = o["name"] | "";
+            display = o["display"] | name;
+            factor = o["factor"] | "1";
+            unit = o["unit"] | "";
+            mqtt = o["mqtt"].isNull() ? (o["sendMQTT"] | false) : (o["mqtt"] | false);
+            send = o["send"].isNull() ? (o["sendPayload"] | false) : (o["send"] | false);
+        } else {
+            const char* packed = v.as<const char*>();
+            if (!packed) continue;
 
-        int p1 = strchr(p, '|') - p;
-        int p2 = strchr(p + p1 + 1, '|') - p;
-        int p3 = strchr(p + p2 + 1, '|') - p;
-        int p4 = strchr(p + p3 + 1, '|') - p;
-        int p5 = strchr(p + p4 + 1, '|') - p;
+            const char* p = packed;
+            size_t packLen = strlen(p);
 
-        String name(p, p1);
-        String display(p + p1 + 1, p2 - p1 - 1);
-        String factor(p + p2 + 1, p3 - p2 - 1);
-        String unit(p + p3 + 1, p4 - p3 - 1);
-        bool mqtt = (*(p + p4 + 1) == '1');
-        bool send = (*(p + p5 + 1) == '1');
+            const char* s1 = strchr(p, '|');
+            if (!s1 || s1 - p < 1) continue;
+            const char* s2 = strchr(s1 + 1, '|');
+            if (!s2 || s2 <= s1 + 1) continue;
+            const char* s3 = strchr(s2 + 1, '|');
+            if (!s3 || s3 <= s2 + 1) continue;
+            const char* s4 = strchr(s3 + 1, '|');
+            if (!s4 || s4 <= s3 + 1) continue;
+            const char* s5 = strchr(s4 + 1, '|');
+            if (!s5 || s5 <= s4 + 1) continue;
+
+            int p1 = (int)(s1 - p);
+            int p2 = (int)(s2 - p);
+            int p3 = (int)(s3 - p);
+            int p4 = (int)(s4 - p);
+            int p5 = (int)(s5 - p);
+
+            if (p5 + 2 > (int)packLen) continue;
+
+            name = String(p, p1);
+            display = String(p + p1 + 1, p2 - p1 - 1);
+            factor = String(p + p2 + 1, p3 - p2 - 1);
+            unit = String(p + p3 + 1, p4 - p3 - 1);
+            mqtt = (*(p + p4 + 1) == '1');
+            send = (*(p + p5 + 1) == '1');
+        }
+
+        if (name.length() == 0) continue;
+        if (display.length() == 0) display = name;
+        if (factor.length() == 0) factor = "1";
 
         FieldConfig fc;
         fc.label = display;
@@ -468,12 +769,21 @@ void AppConfig::loadPwrFields() {
 
         battery.fieldsPwr[name] = fc;
     }
+
+    ensureDefaultPwrFields(battery.fieldsPwr);
 }
 
 void AppConfig::saveBatConfig() {
     Preferences p;
     p.begin("battery_bat", false);
 
+    battery.intervalBat = clampIntervalMs(
+        battery.intervalBat,
+        10000UL,       // 10s
+        7200000UL,     // 2h
+        300000UL,      // 5min default
+        "BAT"
+    );
     p.putULong("interval", battery.intervalBat);
     p.putBool("enabled", battery.enableBat);
 
@@ -484,29 +794,28 @@ void AppConfig::saveBatConfig() {
 //  BAT FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::saveBatFields() {
-    DynamicJsonDocument doc(3000);
+    DynamicJsonDocument doc(DOC_CAP_BAT_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 
     for (auto &kv : battery.fieldsBat) {
         const String& name = kv.first;
         const FieldConfig& fc = kv.second;
+        JsonObject o = arr.createNestedObject();
+        o["name"]    = name;
+        o["display"] = fc.display;
+        o["factor"]  = fc.factor;
+        o["unit"]    = fc.unit;
+        o["mqtt"]    = fc.mqtt;
+        o["send"]    = fc.send;
+    }
 
-        String packed;
-        packed.reserve(80);
-        packed += name; packed += "|";
-        packed += fc.display; packed += "|";
-        packed += fc.factor; packed += "|";
-        packed += fc.unit; packed += "|";
-        packed += (fc.mqtt ? "1" : "0"); packed += "|";
-        packed += (fc.send ? "1" : "0");
-
-        arr.add(packed);
+    if (doc.overflowed()) {
+        Log(LOG_ERROR, "saveBatFields: JSON document overflow, aborting save");
+        return;
     }
 
     String json;
-    json.reserve(3000);
     serializeJson(doc, json);
-
     saveJsonChunked("battery_bat", "bat", json);
 }
 
@@ -519,6 +828,13 @@ void AppConfig::loadBatConfig() {
 
     battery.intervalBat = p.getULong("interval", battery.intervalBat);
     battery.enableBat   = p.getBool("enabled", battery.enableBat);
+    battery.intervalBat = clampIntervalMs(
+        battery.intervalBat,
+        10000UL,
+        7200000UL,
+        300000UL,
+        "BAT"
+    );
 
     p.end();
 }
@@ -526,33 +842,79 @@ void AppConfig::loadBatConfig() {
 void AppConfig::loadBatFields() {
     String json = loadJsonChunked("battery_bat", "bat");
     if (json.length() == 0) return;
+    if (json.length() > 100000) {
+        Log(LOG_ERROR, "loadBatFields: payload too large (" + String(json.length()) + "), keeping existing config");
+        return;
+    }
 
-    DynamicJsonDocument doc(3000);
-    if (deserializeJson(doc, json)) return;
+    size_t docCap = jsonDocCapacityForPayload(json.length(), DOC_CAP_BAT_FIELDS, 65536);
+    DynamicJsonDocument doc(docCap);
+    if (deserializeJson(doc, json)) {
+        Log(LOG_ERROR, "loadBatFields: JSON deserialization failed (len=" + String(json.length()) + ", cap=" + String(docCap) + "), keeping existing config");
+        return;
+    }
 
     JsonArray arr = doc["fields"];
-    if (arr.isNull()) return;
+    if (arr.isNull() || arr.size() == 0) {
+        Log(LOG_WARN, "loadBatFields: No fields array found");
+        return;
+    }
 
     battery.fieldsBat.clear();
 
     for (JsonVariant v : arr) {
-        const char* packed = v.as<const char*>();
-        if (!packed) continue;
+        String name;
+        String display;
+        String factor;
+        String unit;
+        bool mqtt = false;
+        bool send = false;
 
-        const char* p = packed;
+        if (v.is<JsonObject>()) {
+            JsonObject o = v.as<JsonObject>();
+            name = o["name"] | "";
+            display = o["display"] | name;
+            factor = o["factor"] | "1";
+            unit = o["unit"] | "";
+            mqtt = o["mqtt"].isNull() ? (o["sendMQTT"] | false) : (o["mqtt"] | false);
+            send = o["send"].isNull() ? (o["sendPayload"] | false) : (o["send"] | false);
+        } else {
+            const char* packed = v.as<const char*>();
+            if (!packed) continue;
 
-        int p1 = strchr(p, '|') - p;
-        int p2 = strchr(p + p1 + 1, '|') - p;
-        int p3 = strchr(p + p2 + 1, '|') - p;
-        int p4 = strchr(p + p3 + 1, '|') - p;
-        int p5 = strchr(p + p4 + 1, '|') - p;
+            const char* p = packed;
+            size_t packLen = strlen(p);
 
-        String name(p, p1);
-        String display(p + p1 + 1, p2 - p1 - 1);
-        String factor(p + p2 + 1, p3 - p2 - 1);
-        String unit(p + p3 + 1, p4 - p3 - 1);
-        bool mqtt = (*(p + p4 + 1) == '1');
-        bool send = (*(p + p5 + 1) == '1');
+            const char* s1 = strchr(p, '|');
+            if (!s1 || s1 - p < 1) continue;
+            const char* s2 = strchr(s1 + 1, '|');
+            if (!s2 || s2 <= s1 + 1) continue;
+            const char* s3 = strchr(s2 + 1, '|');
+            if (!s3 || s3 <= s2 + 1) continue;
+            const char* s4 = strchr(s3 + 1, '|');
+            if (!s4 || s4 <= s3 + 1) continue;
+            const char* s5 = strchr(s4 + 1, '|');
+            if (!s5 || s5 <= s4 + 1) continue;
+
+            int p1 = (int)(s1 - p);
+            int p2 = (int)(s2 - p);
+            int p3 = (int)(s3 - p);
+            int p4 = (int)(s4 - p);
+            int p5 = (int)(s5 - p);
+
+            if (p5 + 2 > (int)packLen) continue;
+
+            name = String(p, p1);
+            display = String(p + p1 + 1, p2 - p1 - 1);
+            factor = String(p + p2 + 1, p3 - p2 - 1);
+            unit = String(p + p3 + 1, p4 - p3 - 1);
+            mqtt = (*(p + p4 + 1) == '1');
+            send = (*(p + p5 + 1) == '1');
+        }
+
+        if (name.length() == 0) continue;
+        if (display.length() == 0) display = name;
+        if (factor.length() == 0) factor = "1";
 
         FieldConfig fc;
         fc.label = display;
@@ -575,6 +937,13 @@ void AppConfig::loadStatConfig() {
 
     battery.intervalStat = p.getULong("interval", battery.intervalStat);
     battery.enableStat   = p.getBool("enabled", battery.enableStat);
+    battery.intervalStat = clampIntervalMs(
+        battery.intervalStat,
+        10000UL,       // 10s
+        7200000UL,     // 2h
+        1800000UL,     // 30min default
+        "STAT"
+    );
 
     p.end();
 }
@@ -583,8 +952,52 @@ void AppConfig::saveStatConfig() {
     Preferences p;
     p.begin("battery_stat", false);
 
+    battery.intervalStat = clampIntervalMs(
+        battery.intervalStat,
+        10000UL,
+        7200000UL,
+        1800000UL,
+        "STAT"
+    );
     p.putULong("interval", battery.intervalStat);
     p.putBool("enabled", battery.enableStat);
+
+    p.end();
+}
+
+// ----------------------------------------------------
+//  INFO CONFIG
+// ----------------------------------------------------
+void AppConfig::loadInfoConfig() {
+    Preferences p;
+    p.begin("battery_info", true);
+
+    battery.intervalInfo = p.getULong("interval", battery.intervalInfo);
+    battery.enableInfo   = p.getBool("enabled", battery.enableInfo);
+    battery.intervalInfo = clampIntervalMs(
+        battery.intervalInfo,
+        10000UL,       // 10s
+        7200000UL,     // 2h
+        3600000UL,     // 1h default
+        "INFO"
+    );
+
+    p.end();
+}
+
+void AppConfig::saveInfoConfig() {
+    Preferences p;
+    p.begin("battery_info", false);
+
+    battery.intervalInfo = clampIntervalMs(
+        battery.intervalInfo,
+        10000UL,
+        7200000UL,
+        3600000UL,
+        "INFO"
+    );
+    p.putULong("interval", battery.intervalInfo);
+    p.putBool("enabled", battery.enableInfo);
 
     p.end();
 }
@@ -593,62 +1006,104 @@ void AppConfig::saveStatConfig() {
 //  STAT FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::saveStatFields() {
-    DynamicJsonDocument doc(3000);
+    DynamicJsonDocument doc(DOC_CAP_STAT_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 
     for (auto &kv : battery.fieldsStat) {
         const String& name = kv.first;
         const FieldConfig& fc = kv.second;
+        JsonObject o = arr.createNestedObject();
+        o["name"]    = name;
+        o["display"] = fc.display;
+        o["factor"]  = fc.factor;
+        o["unit"]    = fc.unit;
+        o["mqtt"]    = fc.mqtt;
+        o["send"]    = fc.send;
+    }
 
-        String packed;
-        packed.reserve(80);
-        packed += name; packed += "|";
-        packed += fc.display; packed += "|";
-        packed += fc.factor; packed += "|";
-        packed += fc.unit; packed += "|";
-        packed += (fc.mqtt ? "1" : "0"); packed += "|";
-        packed += (fc.send ? "1" : "0");
-
-        arr.add(packed);
+    if (doc.overflowed()) {
+        Log(LOG_ERROR, "saveStatFields: JSON document overflow, aborting save");
+        return;
     }
 
     String json;
-    json.reserve(3000);
     serializeJson(doc, json);
-
     saveJsonChunked("battery_stat", "stat", json);
 }
 
 void AppConfig::loadStatFields() {
     String json = loadJsonChunked("battery_stat", "stat");
     if (json.length() == 0) return;
-
-    DynamicJsonDocument doc(3000);
-    if (deserializeJson(doc, json)) return;
+    if (json.length() > 100000) {
+        Log(LOG_ERROR, "loadStatFields: payload too large (" + String(json.length()) + "), keeping existing config");
+        return;
+    }
+    size_t docCap = jsonDocCapacityForPayload(json.length(), DOC_CAP_STAT_FIELDS, 65536);
+    DynamicJsonDocument doc(docCap);
+    if (deserializeJson(doc, json)) {
+        Log(LOG_ERROR, "loadStatFields: JSON deserialization failed (len=" + String(json.length()) + ", cap=" + String(docCap) + "), keeping existing config");
+        return;
+    }
 
     JsonArray arr = doc["fields"];
-    if (arr.isNull()) return;
+    if (arr.isNull() || arr.size() == 0) {
+        Log(LOG_WARN, "loadStatFields: No fields array found");
+        return;
+    }
 
     battery.fieldsStat.clear();
 
     for (JsonVariant v : arr) {
-        const char* packed = v.as<const char*>();
-        if (!packed) continue;
+        String name;
+        String display;
+        String factor;
+        String unit;
+        bool mqtt = false;
+        bool send = false;
 
-        const char* p = packed;
+        if (v.is<JsonObject>()) {
+            JsonObject o = v.as<JsonObject>();
+            name = o["name"] | "";
+            display = o["display"] | name;
+            factor = o["factor"] | "1";
+            unit = o["unit"] | "";
+            mqtt = o["mqtt"].isNull() ? (o["sendMQTT"] | false) : (o["mqtt"] | false);
+            send = o["send"].isNull() ? (o["sendPayload"] | false) : (o["send"] | false);
+        } else {
+            // Rueckwaertskompatibel: altes packed-Format name|display|factor|unit|mqtt|send
+            const char* packed = v.as<const char*>();
+            if (!packed) continue;
 
-        int p1 = strchr(p, '|') - p;
-        int p2 = strchr(p + p1 + 1, '|') - p;
-        int p3 = strchr(p + p2 + 1, '|') - p;
-        int p4 = strchr(p + p3 + 1, '|') - p;
-        int p5 = strchr(p + p4 + 1, '|') - p;
+            const char* p = packed;
 
-        String name(p, p1);
-        String display(p + p1 + 1, p2 - p1 - 1);
-        String factor(p + p2 + 1, p3 - p2 - 1);
-        String unit(p + p3 + 1, p4 - p3 - 1);
-        bool mqtt = (*(p + p4 + 1) == '1');
-        bool send = (*(p + p5 + 1) == '1');
+            const char* s1 = strchr(p, '|');
+            if (!s1) continue;
+            const char* s2 = strchr(s1 + 1, '|');
+            if (!s2) continue;
+            const char* s3 = strchr(s2 + 1, '|');
+            if (!s3) continue;
+            const char* s4 = strchr(s3 + 1, '|');
+            if (!s4) continue;
+            const char* s5 = strchr(s4 + 1, '|');
+            if (!s5) continue;
+
+            int p1 = (int)(s1 - p);
+            int p2 = (int)(s2 - p);
+            int p3 = (int)(s3 - p);
+            int p4 = (int)(s4 - p);
+            int p5 = (int)(s5 - p);
+
+            name = String(p, p1);
+            display = String(p + p1 + 1, p2 - p1 - 1);
+            factor = String(p + p2 + 1, p3 - p2 - 1);
+            unit = String(p + p3 + 1, p4 - p3 - 1);
+            mqtt = (*(p + p4 + 1) == '1');
+            send = (*(p + p5 + 1) == '1');
+        }
+
+        if (name.length() == 0) continue;
+        if (display.length() == 0) display = name;
+        if (factor.length() == 0) factor = "1";
 
         FieldConfig fc;
         fc.label = display;
@@ -659,6 +1114,125 @@ void AppConfig::loadStatFields() {
         fc.send = send;
 
         battery.fieldsStat[name] = fc;
+    }
+}
+
+// ----------------------------------------------------
+//  INFO FIELDS (JSON + chunks)
+// ----------------------------------------------------
+void AppConfig::saveInfoFields() {
+    DynamicJsonDocument doc(DOC_CAP_INFO_FIELDS);
+    JsonArray arr = doc.createNestedArray("fields");
+
+    for (auto &kv : battery.fieldsInfo) {
+        const String& name = kv.first;
+        const FieldConfig& fc = kv.second;
+        JsonObject o = arr.createNestedObject();
+        o["name"]    = name;
+        o["display"] = fc.display;
+        o["factor"]  = fc.factor;
+        o["unit"]    = fc.unit;
+        o["mqtt"]    = fc.mqtt;
+        o["send"]    = fc.send;
+    }
+
+    if (doc.overflowed()) {
+        Log(LOG_ERROR, "saveInfoFields: JSON document overflow, aborting save");
+        return;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    saveJsonChunked("battery_info", "info", json);
+}
+
+void AppConfig::loadInfoFields() {
+    String json = loadJsonChunked("battery_info", "info");
+    if (json.length() == 0) return;
+    if (json.length() > 100000) {
+        Log(LOG_ERROR, "loadInfoFields: payload too large (" + String(json.length()) + "), keeping existing config");
+        return;
+    }
+
+    size_t docCap = jsonDocCapacityForPayload(json.length(), DOC_CAP_INFO_FIELDS, 65536);
+    DynamicJsonDocument doc(docCap);
+    if (deserializeJson(doc, json)) {
+        Log(LOG_ERROR, "loadInfoFields: JSON deserialization failed (len=" + String(json.length()) + ", cap=" + String(docCap) + "), keeping existing config");
+        return;
+    }
+
+    JsonArray arr = doc["fields"];
+    if (arr.isNull() || arr.size() == 0) {
+        Log(LOG_WARN, "loadInfoFields: No fields array found");
+        return;
+    }
+
+    battery.fieldsInfo.clear();
+
+    for (JsonVariant v : arr) {
+        String name;
+        String display;
+        String factor;
+        String unit;
+        bool mqtt = false;
+        bool send = false;
+
+        if (v.is<JsonObject>()) {
+            JsonObject o = v.as<JsonObject>();
+            name = o["name"] | "";
+            display = o["display"] | name;
+            factor = o["factor"] | "1";
+            unit = o["unit"] | "";
+            mqtt = o["mqtt"].isNull() ? (o["sendMQTT"] | false) : (o["mqtt"] | false);
+            send = o["send"].isNull() ? (o["sendPayload"] | false) : (o["send"] | false);
+        } else {
+            // Rueckwaertskompatibel: altes packed-Format name|display|factor|unit|mqtt|send
+            const char* packed = v.as<const char*>();
+            if (!packed) continue;
+
+            const char* p = packed;
+            size_t packLen = strlen(p);
+
+            const char* s1 = strchr(p, '|');
+            if (!s1 || s1 - p < 1) continue;
+            const char* s2 = strchr(s1 + 1, '|');
+            if (!s2 || s2 <= s1 + 1) continue;
+            const char* s3 = strchr(s2 + 1, '|');
+            if (!s3 || s3 <= s2 + 1) continue;
+            const char* s4 = strchr(s3 + 1, '|');
+            if (!s4 || s4 <= s3 + 1) continue;
+            const char* s5 = strchr(s4 + 1, '|');
+            if (!s5 || s5 <= s4 + 1) continue;
+
+            int p1 = (int)(s1 - p);
+            int p2 = (int)(s2 - p);
+            int p3 = (int)(s3 - p);
+            int p4 = (int)(s4 - p);
+            int p5 = (int)(s5 - p);
+
+            if (p5 + 2 > (int)packLen) continue;
+
+            name = String(p, p1);
+            display = String(p + p1 + 1, p2 - p1 - 1);
+            factor = String(p + p2 + 1, p3 - p2 - 1);
+            unit = String(p + p3 + 1, p4 - p3 - 1);
+            mqtt = (*(p + p4 + 1) == '1');
+            send = (*(p + p5 + 1) == '1');
+        }
+
+        if (name.length() == 0) continue;
+        if (display.length() == 0) display = name;
+        if (factor.length() == 0) factor = "1";
+
+        FieldConfig fc;
+        fc.label = display;
+        fc.display = display;
+        fc.factor = factor;
+        fc.unit = unit;
+        fc.mqtt = mqtt;
+        fc.send = send;
+
+        battery.fieldsInfo[name] = fc;
     }
 }
 
@@ -676,6 +1250,9 @@ void AppConfig::load() {
 
     loadStatConfig();
     loadStatFields();
+
+    loadInfoConfig();
+    loadInfoFields();
 }
 
 void AppConfig::save() {
@@ -689,6 +1266,9 @@ void AppConfig::save() {
 
     saveStatConfig();
     saveStatFields();
+
+    saveInfoConfig();
+    saveInfoFields();
 }
 
 
@@ -700,8 +1280,13 @@ String findPosixForTimezone(const String& tzName) {
         return "UTC0";
     }
 
-    DynamicJsonDocument doc(20000);
-    DeserializationError err = deserializeJson(doc, f);
+    // Filter: nur tz + posix laden → DynamicJsonDocument statt 20000 nur noch ~4096 nötig
+    StaticJsonDocument<64> filter;
+    filter["*"][0]["tz"]    = true;
+    filter["*"][0]["posix"] = true;
+
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, f, DeserializationOption::Filter(filter));
     f.close();
 
     if (err) {
@@ -754,5 +1339,21 @@ StatBuffer statA;
 StatBuffer statB;
 volatile bool statUseA = true;
 
+InfoBuffer infoA;
+InfoBuffer infoB;
+volatile bool infoUseA = true;
+
+// Per-module pending publish buffers
+InfoData  g_pendingInfo[MAX_BATTERY_MODULES];
+volatile bool g_pendingInfoReady[MAX_BATTERY_MODULES] = {};
+StatData  g_pendingStat[MAX_BATTERY_MODULES];
+volatile bool g_pendingStatReady[MAX_BATTERY_MODULES] = {};
+
 BatteryMode g_batteryMode = BatteryMode::UNKNOWN;
+
+SemaphoreHandle_t g_statMutex = NULL;
+SemaphoreHandle_t g_infoMutex = NULL;
+SemaphoreHandle_t g_batMutex  = NULL;
+SemaphoreHandle_t g_pwrMutex  = NULL;
+SemaphoreHandle_t g_healthMutex = NULL;
 

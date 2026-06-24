@@ -1,6 +1,23 @@
 #pragma once
 #include "api_core.h"
 #include "../config.h"
+#include <esp_heap_caps.h>
+
+struct HealthSpiRamAllocator {
+    void* allocate(size_t size) {
+        return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+
+    void deallocate(void* pointer) {
+        heap_caps_free(pointer);
+    }
+
+    void* reallocate(void* ptr, size_t new_size) {
+        return heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+};
+
+using HealthSpiRamJsonDocument = BasicJsonDocument<HealthSpiRamAllocator>;
 
 extern HealthStatus health;
 
@@ -10,12 +27,19 @@ inline void registerHealthAPI() {
     // GET /api/health
     // ---------------------------------------------------------
     apiGet("/api/health", []() {
+        HealthStatus healthSnap;
+        if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+            healthSnap = health;
+            xSemaphoreGive(g_healthMutex);
+        } else {
+            healthSnap = health;
+        }
 
-        StaticJsonDocument<4096> doc;
+        HealthSpiRamJsonDocument doc(8192);
 
         // MODULES
         JsonArray mods = doc.createNestedArray("modules");
-        for (auto &m : health.modules) {
+        for (auto &m : healthSnap.modules) {
             JsonObject o = mods.createNestedObject();
             o["index"]    = m.index;
             o["status"]   = m.status;
@@ -27,33 +51,33 @@ inline void registerHealthAPI() {
 
         // STACK
         JsonObject st = doc.createNestedObject("stack");
-        st["cellMin"]  = health.stackCellMin;
-        st["cellMax"]  = health.stackCellMax;
-        st["cellDiff"] = health.stackCellDiff;
+        st["cellMin"]  = healthSnap.stackCellMin;
+        st["cellMax"]  = healthSnap.stackCellMax;
+        st["cellDiff"] = healthSnap.stackCellDiff;
 
         // LIST HELPERS
         auto addList = [&](JsonArray arr, const std::vector<int> &v) {
             for (int x : v) arr.add(x);
         };
 
-        addList(doc.createNestedArray("ok"),           health.okModules);
-        addList(doc.createNestedArray("warn"),         health.warnModules);
-        addList(doc.createNestedArray("error"),        health.errorModules);
-        addList(doc.createNestedArray("warnHistory"),  health.warnHistory);
-        addList(doc.createNestedArray("errorHistory"), health.errorHistory);
+        addList(doc.createNestedArray("ok"),           healthSnap.okModules);
+        addList(doc.createNestedArray("warn"),         healthSnap.warnModules);
+        addList(doc.createNestedArray("error"),        healthSnap.errorModules);
+        addList(doc.createNestedArray("warnHistory"),  healthSnap.warnHistory);
+        addList(doc.createNestedArray("errorHistory"), healthSnap.errorHistory);
 
         // STRONGEST + COLOR
-        doc["strongest"] = health.strongestMessage;
-        doc["color"]     = health.color;
+        doc["strongest"] = healthSnap.strongestMessage;
+        doc["color"]     = healthSnap.color;
 
         // NEW: CONFIG VALUES
         JsonObject cfg = doc.createNestedObject("config");
         cfg["cellDiffWarn"]  = config.battery.cellDiffWarn;
         cfg["cellDiffError"] = config.battery.cellDiffError;
 
-        String out;
-        serializeJson(doc, out);
-        apiJson(out);
+        server.setContentLength(measureJson(doc));
+        server.send(200, "application/json", "");
+        serializeJson(doc, server.client());
     });
 
     // ---------------------------------------------------------
@@ -80,8 +104,11 @@ inline void registerHealthAPI() {
     // GET /api/health/reset
     // ---------------------------------------------------------
     apiGet("/api/health/reset", []() {
-        health.warnHistory.clear();
-        health.errorHistory.clear();
+        if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+            health.warnHistory.clear();
+            health.errorHistory.clear();
+            xSemaphoreGive(g_healthMutex);
+        }
         apiText(F("OK"));
     });
 }

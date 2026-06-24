@@ -31,6 +31,7 @@
     <a href="#" onclick="loadPage('pages_connection'); return false;">Connection</a>
     <a href="#" onclick="loadPage('pages_log'); return false;">Log</a>
     <a href="#" onclick="loadPage('pages_health'); return false;">Health</a>
+    <a href="#" onclick="loadPage('pages_info'); return false;">Info</a>
 
     <!-- Dynamische Service-Links -->
     <span id="service-links"></span>
@@ -43,6 +44,8 @@
 </main>
 
 <script>
+let activePageScripts = [];
+
 // -------------------------------------------------------------
 // Sidebar öffnen/schließen
 // -------------------------------------------------------------
@@ -87,6 +90,12 @@ function updateServiceLinks() {
 // Dynamisches Laden der Unterseiten
 // -------------------------------------------------------------
 function loadPage(url) {
+    // Alte dynamisch injizierte Skripte der vorherigen Seite entfernen.
+    activePageScripts.forEach(s => {
+        if (s && s.parentNode) s.parentNode.removeChild(s);
+    });
+    activePageScripts = [];
+
     fetch(url + ".html")
         .then(r => r.text())
         .then(html => {
@@ -112,7 +121,8 @@ function loadPage(url) {
                     }
                 }
 
-                document.body.appendChild(newScript);
+                content.appendChild(newScript);
+                activePageScripts.push(newScript);
             });
 
             if (scripts.length === 0 && url.includes("connection")) {

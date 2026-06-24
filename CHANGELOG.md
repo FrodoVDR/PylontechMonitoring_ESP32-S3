@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 
 - other Homeautomation (Discoverer)
 
+## 2026-06-24
+- 1.2.2
+- MQTT stack: SOC added to `pylontech/stack` payload
+- Stack SOC calculation corrected to average Coulomb across all modules (rounded, based on BatteryCount)
+- MQTT stack: computed `StackPower` added (`StackCurrSum * StackVoltAvg`) with unit W
+- MQTT stack: `StackPowerIn` and `StackPowerOut` added (split from `StackPower` for charge/discharge)
+- BAT parser: SOC values are normalized to numeric text (e.g. `98%` -> `98`)
+- PWR parser: SOC/Coulomb values stored without `%` suffix in all fields (Stack + Hub mode)
+- MQTT payload typing: numeric values are now published as JSON numbers (without quotes) for PWR/BAT/STAT/INFO
+- MQTT PWR: `Power`/`Battery` index field is forced numeric when parseable
+- MQTT BAT cells: added numeric `Number` field with module index (1..N)
+- Scheduler hardening: runtime battery mode lock + auto-recovery on unexpected mode flips (prevents HUB-stop stall)
+- BAT pipeline stabilization: synchronized single-writer/snapshot-reader buffer handling (mutex) to avoid race-related PANICs
+- Optional debug visibility for stack publish values (SOC + BatteryCount)
+- Syslog settings persistence: UDP target/enabled state now survives reboot and logs persisted/loaded state for diagnostics
+- UART frame handling hardened for STACK commands: complete `@...$$` frames are accepted even when the trailing `pylon>` prompt is delayed
+- PWR stability: transient parser undercounts no longer reduce detected module count; retry handling added for incomplete PWR reads
+- BAT scheduler now uses stable detected module count so transient PWR drops do not remove modules from BAT polling
+- BAT parser now treats fewer than 15 cells per module as an incomplete query and rejects the frame instead of publishing partial data
+- BAT retry handling improved: incomplete BAT frames trigger retries with UART console recovery before retrying
+- PWR parser tolerates missing/noisy optional temperature/SOC fields without dropping otherwise valid module rows
+- INFO page stabilization for navigation flow (INFO -> Health -> INFO)
+- INFO cache hardening with last-good handling and empty-raw protection
+- Scheduler queue hardening (mutex, deduplication, queue limit)
+- MQTT INFO publishing fixes for text-like fields
+- Documentation update (German + English)
+
 ## 2026-05-14 
 - 1.2.1
 - config values for helth

@@ -2,6 +2,7 @@
 #include "api_core.h"
 #include <ArduinoJson.h>
 #include "../py_wifimanager.h"
+#include "../py_eth.h"
 #include "../py_mqtt.h"
 #include "../config.h"
 
@@ -130,11 +131,12 @@ static void apiTimePost() {
     config.timezone        = req["timezone"]        | "Europe/Berlin";
 
     config.save();
+    WiFiManagerModule::applyTimezone(); // Apply new timezone immediately
     apiText(F("Time saved"));
 }
 
 // ---------------------------------------------------------
-// NETWORK API
+// NETWORK API  (WiFi static IP only)
 // ---------------------------------------------------------
 static void apiNetworkGet() {
     StaticJsonDocument<256> doc;
@@ -165,5 +167,61 @@ static void apiNetworkPost() {
     config.dns         = req["dns"]  | "";
 
     config.save();
-    apiText(F("Network saved"));
+    apiText(F("WiFi network config saved"));
+}
+
+// ---------------------------------------------------------
+// ETHERNET API
+// ---------------------------------------------------------
+static void apiEthGet() {
+    String statusJson = EthManagerModule::getStatusJson();
+
+    StaticJsonDocument<512> doc;
+    deserializeJson(doc, statusJson);
+
+    doc["phy_addr"]  = config.ethPhyAddr;
+    doc["miso_pin"]  = config.ethMisoPin;
+    doc["mosi_pin"]  = config.ethMosiPin;
+    doc["sclk_pin"]  = config.ethSclkPin;
+    doc["cs_pin"]    = config.ethCsPin;
+    doc["rst_pin"]   = config.ethRstPin;
+    doc["int_pin"]   = config.ethIntPin;
+
+    // ETH-specific static IP
+    doc["eth_dhcp"] = !config.ethUseStaticIP;
+    doc["eth_ip"]   = config.ethIpAddr;
+    doc["eth_mask"] = config.ethSubnetMask;
+    doc["eth_gw"]   = config.ethGateway;
+    doc["eth_dns"]  = config.ethDns;
+
+    String out;
+    serializeJson(doc, out);
+    apiJson(out);
+}
+
+static void apiEthPost() {
+    if (!server.hasArg("plain"))
+        return apiError(400, F("Missing body"));
+
+    StaticJsonDocument<384> req;
+    if (deserializeJson(req, server.arg("plain")))
+        return apiError(400, F("Invalid JSON"));
+
+    config.useEthernet    = req["enabled"]  | false;
+    config.ethPhyAddr     = (int8_t)(req["phy_addr"] | 1);
+    config.ethMisoPin     = (int8_t)(req["miso_pin"] | 12);
+    config.ethMosiPin     = (int8_t)(req["mosi_pin"] | 11);
+    config.ethSclkPin     = (int8_t)(req["sclk_pin"] | 13);
+    config.ethCsPin       = (int8_t)(req["cs_pin"]   | 14);
+    config.ethRstPin      = (int8_t)(req["rst_pin"]  | 9);
+    config.ethIntPin      = (int8_t)(req["int_pin"]  | 10);
+
+    config.ethUseStaticIP = !(req["eth_dhcp"] | true);
+    config.ethIpAddr      = req["eth_ip"]   | "";
+    config.ethSubnetMask  = req["eth_mask"] | "";
+    config.ethGateway     = req["eth_gw"]   | "";
+    config.ethDns         = req["eth_dns"]  | "";
+
+    config.save();
+    apiText(F("ETH config saved – reboot to apply"));
 }

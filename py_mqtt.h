@@ -15,6 +15,8 @@ struct BatField;
 struct BatData;
 struct StatField;
 struct StatData;
+struct InfoField;
+struct InfoData;
 struct ParsedData;
 
 struct MqttMessage {
@@ -39,11 +41,13 @@ public:
     void publishDiscoveryBatCell(int moduleIndex, int cellIndex);
     void publishBatCells(int moduleIndex, const std::vector<BatData>& batCells);
     void publishStat(int moduleIndex, const StatData& stat);
+    void publishInfo(int moduleIndex, const InfoData& info);
 
     bool isDiscoveryActive() const { return discoveryActive; }
 
     bool isConnected() { return mqttClient.connected(); }
     void publishDiscoveryStatModule(int moduleIndex);
+    void publishDiscoveryInfoModule(int moduleIndex);
     bool publishDirect(const String& topic, const String& payload);
 
 
@@ -102,6 +106,7 @@ private:
     void publishDiscoveryStack();
     void publishDiscoveryPwrModule(int moduleIndex);
     void publishDiscoveryStatField(int moduleIndex, const StatField& f);
+    void publishDiscoveryInfoField(int moduleIndex, const InfoField& f);
 
     // Discovery state machine
     void handleDiscoveryStep(

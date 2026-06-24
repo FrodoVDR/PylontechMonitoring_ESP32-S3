@@ -9,11 +9,17 @@ enum LogLevel {
     LOG_DEBUG
 };
 
+void WebLogInit();
 void Log(LogLevel lvl, const String& msg);
 
 void WebLog(const String& msg);
 String WebLogGet();
-//void WebLogClear();
+void WebLogClear();
+
+bool WebLogFileEnabled();
+void WebLogFileEnable(bool enable);
+String WebLogFilePath();
+bool WebLogFileClear();
 
 //void PersistentLog(const String& msg);
 //String PersistentLogDump();

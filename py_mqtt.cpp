@@ -5,11 +5,21 @@
 #include "py_parser_pwr.h"
 #include "py_parser_bat.h"
 #include "py_parser_stat.h"
+#include "py_parser_info.h"
 #include "py_mqtt.h"
 #include "py_mqtt_hub.h"
 #include <WiFi.h>
 #include <map>
 #include <set>
+#include <cstdlib>
+#include "esp_heap_caps.h"
+
+// Heap-floor guard: when free internal DRAM drops below this, the MQTT
+// loop skips its heavy publish work (deep PwrBuffer copy with std::map,
+// per-module publishes). Those operations allocate C++ containers, which
+// abort() on bad_alloc (firmware built without exceptions) -> PANIC. Skip
+// a cycle instead of crashing; publishing resumes once heap recovers.
+static const size_t MQTT_MIN_FREE_HEAP = 15000;
 
 /* ---------------------------------------------------------------------------
    GLOBAL STATE
@@ -30,16 +40,20 @@ bool statParserHasData    = false;
 int  statParserModuleIndex = 0;
 bool batParserHasData     = false;
 int  batParserModuleIndex  = 0;
+bool infoParserHasData    = false;
+int  infoParserModuleIndex = 0;
 
 // Discovery triggers
 bool discoveryPwrNeeded   = false;
 bool discoveryBatNeeded   = false;
 bool discoveryStatNeeded  = false;
+bool discoveryInfoNeeded  = false;
 
 // Discovery tracking (modules already announced)
 std::set<int> discoveredPwr;
 std::set<int> discoveredBat;
 std::set<int> discoveredStat;
+std::set<int> discoveredInfo;
 
 // Discovery state machine
 enum DiscoveryPhase {
@@ -48,6 +62,7 @@ enum DiscoveryPhase {
     DISC_PWR,
     DISC_BAT,
     DISC_STAT,
+    DISC_INFO,
     DISC_DONE
 };
 
@@ -60,10 +75,18 @@ static size_t discBatCell    = 0;
 static size_t discBatField   = 0;
 static size_t discStatModule = 0;
 static size_t discStatField  = 0;
+static size_t discInfoModule = 0;
 
 // Reconnect timers
 static unsigned long lastReconnectAttempt = 0;
 static unsigned long wifiConnectedSince   = 0;
+static int nextStatPublishIdx = 1;
+static int nextInfoPublishIdx = 1;
+
+// Shared serialization buffer for all MQTT publishes. Avoids a per-publish
+// String allocation on the scarce internal DRAM heap. Safe as a single static
+// buffer because every publish runs sequentially on Task2 (MQTT loop()).
+static char s_mqttPayloadBuf[1280];
 
 // Double-buffer for parser data
 //ParsedData bufferA;
@@ -105,6 +128,278 @@ static void logWarn(const String& msg)  { Log(LOG_WARN,  msg); }
 static void logError(const String& msg) { Log(LOG_ERROR, msg); }
 static void logDebug(const String& msg) { Log(LOG_DEBUG, msg); }
 
+static bool isTextLikeField(const FieldConfig& fc) {
+    return (fc.factor == "text" || fc.factor == "date" || fc.unit == "timestamp");
+}
+
+static bool tryParseNumberStrict(const String& in, double& out) {
+    String t = in;
+    t.trim();
+    if (t.length() == 0) return false;
+
+    const char* s = t.c_str();
+    char* endPtr = nullptr;
+    out = strtod(s, &endPtr);
+    if (endPtr == s || endPtr == nullptr) return false;
+
+    while (*endPtr == ' ' || *endPtr == '\t' || *endPtr == '\r' || *endPtr == '\n') endPtr++;
+    return (*endPtr == '\0');
+}
+
+static bool isIntegerLike(double v) {
+    long iv = (long)v;
+    return v == (double)iv;
+}
+
+// Strict BAT field validation to prevent publishing malformed values.
+static bool validateBatMqttField(const String& fieldName,
+                                 String& value,
+                                 String& reason) {
+    String key = fieldName;
+    key.toLowerCase();
+
+    if (key == "bal" || key == "balancer") {
+        String b = value;
+        b.trim();
+        b.toUpperCase();
+        if (b == "N" || b == "Y") {
+            value = b;
+            return true;
+        }
+        reason = "balancer not in {N,Y}";
+        return false;
+    }
+
+    if (key == "battery" || key == "volt" || key == "curr" ||
+        key == "tempr" || key == "soc" || key == "coulomb") {
+        double num = 0.0;
+        if (!tryParseNumberStrict(value, num)) {
+            reason = "non-numeric value '" + value + "'";
+            return false;
+        }
+
+        if (key == "battery") {
+            if (!isIntegerLike(num) || num < 0.0 || num > 14.0) {
+                reason = "battery out of range [0..14]";
+                return false;
+            }
+            value = String((int)num);
+            return true;
+        }
+
+        if (key == "volt") {
+            if (num < 2.0 || num > 4.0) {
+                reason = "volt out of range [2..4]";
+                return false;
+            }
+            return true;
+        }
+
+        if (key == "curr") {
+            if (num < -250.0 || num > 250.0) {
+                reason = "curr out of range [-250..250]";
+                return false;
+            }
+            return true;
+        }
+
+        if (key == "tempr") {
+            if (num < -20.0 || num > 60.0) {
+                reason = "tempr out of range [-20..60]";
+                return false;
+            }
+            return true;
+        }
+
+        if (key == "soc" || key == "coulomb") {
+            if (num < 0.0 || num > 100.0) {
+                reason = key + " out of range [0..100]";
+                return false;
+            }
+            return true;
+        }
+    }
+
+    return true;
+}
+
+static String compactLowerKey(const String& in) {
+    String k;
+    k.reserve(in.length());
+    for (char c : in) {
+        if (c >= 'A' && c <= 'Z') c = char(c + 32);
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            k += c;
+        }
+    }
+    return k;
+}
+
+// Validate PWR MQTT fields before publish. Invalid values are skipped.
+static bool validatePwrMqttField(const String& fieldName,
+                                 const String& displayName,
+                                 String& value,
+                                 String& reason) {
+    String key = compactLowerKey(fieldName);
+    String disp = compactLowerKey(displayName);
+
+    auto isAny = [&](const String& a, const String& b) {
+        return (key == a || key == b || disp == a || disp == b);
+    };
+
+    bool isSoc = (key == "soc" || key == "coulomb" || disp == "soc");
+    bool isCurrent = isAny("curr", "current");
+    bool isMosTempr = (key == "mostempr" || key == "mostemp" || disp == "mostempr" || disp == "mostemp");
+    bool isPower = (key == "power" || disp == "power");
+    bool isTemperature = isAny("tempr", "temperature");
+    bool isVhigh = (key == "vhigh" || disp == "vhigh");
+    bool isVlow = (key == "vlow" || disp == "vlow");
+    bool isVoltage = isAny("volt", "voltage");
+
+    if (!(isSoc || isCurrent || isMosTempr || isPower || isTemperature || isVhigh || isVlow || isVoltage)) {
+        return true;
+    }
+
+    double num = 0.0;
+    if (!tryParseNumberStrict(value, num)) {
+        reason = "non-numeric value '" + value + "'";
+        return false;
+    }
+
+    if (isSoc) {
+        if (num < 0.0 || num > 100.0) {
+            reason = "SOC out of range [0..100]";
+            return false;
+        }
+        return true;
+    }
+
+    if (isCurrent) {
+        if (num < -250.0 || num > 250.0) {
+            reason = "Current out of range [-250..250]";
+            return false;
+        }
+        return true;
+    }
+
+    if (isMosTempr || isTemperature) {
+        if (num < -20.0 || num > 60.0) {
+            reason = "Temperature out of range [-20..60]";
+            return false;
+        }
+        return true;
+    }
+
+    if (isVhigh || isVlow) {
+        if (num < 2.0 || num > 4.5) {
+            reason = (isVhigh ? "Vhigh" : "Vlow") + String(" out of range [2..4.5]");
+            return false;
+        }
+        return true;
+    }
+
+    // Power and Voltage must be numeric only.
+    if (isPower || isVoltage) {
+        return true;
+    }
+
+    return true;
+}
+
+static void runMqttValidationSelfTestOnce() {
+    static bool alreadyRun = false;
+    if (alreadyRun) return;
+    alreadyRun = true;
+
+    int failures = 0;
+
+    struct BatCase {
+        const char* field;
+        const char* value;
+        bool expectOk;
+    };
+    const BatCase batCases[] = {
+        {"Volt", "3.347", true},
+        {"Volt", "334essfully", false},
+        {"Curr", "-21.3", true},
+        {"Curr", "-251", false},
+        {"Tempr", "29.4", true},
+        {"Tempr", "120", false},
+        {"SOC", "56", true},
+        {"SOC", "101", false},
+        {"BAL", "N", true},
+        {"BAL", "X", false}
+    };
+
+    for (const auto& tc : batCases) {
+        String value = tc.value;
+        String reason;
+        bool ok = validateBatMqttField(tc.field, value, reason);
+        if (ok != tc.expectOk) {
+            failures++;
+            logError("MQTT self-test BAT failed: field='" + String(tc.field) +
+                     "' value='" + String(tc.value) +
+                     "' expected=" + String(tc.expectOk ? "ok" : "reject") +
+                     " got=" + String(ok ? "ok" : "reject"));
+        }
+    }
+
+    struct PwrCase {
+        const char* field;
+        const char* display;
+        const char* value;
+        bool expectOk;
+    };
+    const PwrCase pwrCases[] = {
+        {"SOC", "SOC", "88", true},
+        {"SOC", "SOC", "188", false},
+        {"Curr", "Current", "-220", true},
+        {"Curr", "Current", "-320", false},
+        {"MosTempr", "MosTempr", "45", true},
+        {"MosTempr", "MosTempr", "80", false},
+        {"Vhigh", "Vhigh", "3.55", true},
+        {"Vhigh", "Vhigh", "5.20", false},
+        {"Voltage", "Voltage", "50.12", true},
+        {"Voltage", "Voltage", "bad-data", false}
+    };
+
+    for (const auto& tc : pwrCases) {
+        String value = tc.value;
+        String reason;
+        bool ok = validatePwrMqttField(tc.field, tc.display, value, reason);
+        if (ok != tc.expectOk) {
+            failures++;
+            logError("MQTT self-test PWR failed: field='" + String(tc.field) +
+                     "' value='" + String(tc.value) +
+                     "' expected=" + String(tc.expectOk ? "ok" : "reject") +
+                     " got=" + String(ok ? "ok" : "reject"));
+        }
+    }
+
+    if (failures == 0) {
+        logInfo("MQTT self-test: BAT/PWR validation passed");
+    } else {
+        logError("MQTT self-test: BAT/PWR validation failures=" + String(failures));
+    }
+}
+
+static void setTypedJsonValue(JsonDocument& doc,
+                              const String& key,
+                              const String& value,
+                              const FieldConfig& fc) {
+    if (isTextLikeField(fc)) {
+        doc[key] = value;
+        return;
+    }
+
+    double number = 0.0;
+    if (tryParseNumberStrict(value, number)) {
+        doc[key] = number;
+    } else {
+        doc[key] = value;
+    }
+}
+
 /* ---------------------------------------------------------------------------
    DISCOVERY RESET
    ---------------------------------------------------------------------------
@@ -115,6 +410,7 @@ void PyMqtt::resetDiscovery(bool pwr, bool bat, bool stat) {
     if (pwr) discoveredPwr.clear();
     if (bat) discoveredBat.clear();
     if (stat) discoveredStat.clear();
+    discoveredInfo.clear();
 
     discoveryPhase = DISC_STACK;
     discPwrIndex   = 0;
@@ -123,6 +419,7 @@ void PyMqtt::resetDiscovery(bool pwr, bool bat, bool stat) {
     discBatField   = 0;
     discStatModule = 0;
     discStatField  = 0;
+    discInfoModule = 0;
 
     discoveryActive = true;
 
@@ -136,6 +433,9 @@ void PyMqtt::resetDiscovery(bool pwr, bool bat, bool stat) {
 --------------------------------------------------------------------------- */
 void PyMqtt::begin() {
     enabled = config.mqtt.enabled;
+
+    // One-shot self-test for strict BAT/PWR validation rules.
+    runMqttValidationSelfTestOnce();
 
     if (!enabled) {
         logInfo("MQTT disabled in configuration");
@@ -208,9 +508,37 @@ bool PyMqtt::publishRaw(const String& topic, const String& payload) {
 void PyMqtt::loop() {
     if (!enabled) return;
 
-    // Double-buffer
-    PwrBuffer* pwr  = pwrUseA  ? &pwrA  : &pwrB;
-    BatBuffer* bat  = batUseA  ? &batA  : &batB;
+    // Heap-floor guard (see MQTT_MIN_FREE_HEAP). Under critically low DRAM,
+    // skip the heavy publish work this cycle to avoid a C++ container
+    // bad_alloc -> abort() -> PANIC. Keep the MQTT connection serviced so
+    // it stays alive; data resumes once heap recovers.
+    size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (freeHeap < MQTT_MIN_FREE_HEAP) {
+        static unsigned long lastLowHeapLog = 0;
+        if (millis() - lastLowHeapLog > 10000) {
+            lastLowHeapLog = millis();
+            logWarn("MQTT: low heap (" + String((uint32_t)freeHeap) +
+                    "B) -> skipping publish cycle");
+        }
+        if (mqttClient.connected()) mqttClient.loop();
+        return;
+    }
+
+    // Kopie des PWR-Buffers NUR wenn neue Daten vorliegen.
+    // WICHTIG: NICHT jede loop()-Iteration kopieren – PwrBuffer hat 8 BatteryModule mit
+    // std::map<String,String>. Kopie alle 20ms = massive Heap-Fragmentierung → Crash.
+    PwrBuffer pwrSnap;
+    bool hasPwr = false;
+    if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        if (parserHasData) {
+            pwrSnap = pwrUseA ? pwrA : pwrB;   // nur wenn wirklich neue Daten
+            hasPwr = true;
+            parserHasData = false;
+        }
+        xSemaphoreGive(g_pwrMutex);
+    }
+    PwrBuffer* pwr  = &pwrSnap;
+    BatBuffer* bat  = batUseA ? &batA : &batB;
     StatBuffer* stat = statUseA ? &statA : &statB;
 
     // WiFi check
@@ -241,6 +569,7 @@ void PyMqtt::loop() {
         discoveryPwrNeeded  = false;
         discoveryBatNeeded  = false;
         discoveryStatNeeded = false;
+        discoveryInfoNeeded = false;
     }
 
     // ---------------------------------------------------------
@@ -255,7 +584,7 @@ void PyMqtt::loop() {
     // PUBLISH PWR (Stack mode vs Hub mode)
     // ---------------------------------------------------------
 
-    if (parserHasData) {
+    if (hasPwr) {
 
         if (g_batteryMode == BatteryMode::STACK) {
             // Original behavior
@@ -271,25 +600,71 @@ void PyMqtt::loop() {
             py_mqtt_hub.publishHubStacks(lastParsedHub);
             py_mqtt_hub.publishHubModules(pwr->modules);
         }
-
-        parserHasData = false;
     }
 
     // ---------------------------------------------------------
-    // PUBLISH BAT CELLS
+    // PUBLISH BAT CELLS (single double-buffer; contamination fixes in the
+    // parser ensure every module parses reliably, so the latest parsed module
+    // is published between BAT parses without per-module buffering. This keeps
+    // internal DRAM usage bounded (2 buffers instead of one per module).
     // ---------------------------------------------------------
     if (batParserHasData) {
-        publishBatCells(batParserModuleIndex, bat->cells);
+        int moduleIndex = batParserModuleIndex;
+        if (g_batMutex && xSemaphoreTake(g_batMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            const BatBuffer& active = batUseA ? batA : batB;
+            if (!active.cells.empty()) {
+                publishBatCells(moduleIndex, active.cells);
+            }
+            xSemaphoreGive(g_batMutex);
+        }
         batParserHasData = false;
     }
 
     // ---------------------------------------------------------
-    // PUBLISH STAT
+    // PUBLISH STAT (gedrosselt: max. 1 pending Modul pro loop)
     // ---------------------------------------------------------
-    if (statParserHasData) {
-        publishStat(statParserModuleIndex, stat->stat);
-        statParserHasData = false;
+    if (g_statMutex && xSemaphoreTake(g_statMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        int checked = 0;
+        int idx = nextStatPublishIdx;
+        while (checked < (MAX_BATTERY_MODULES - 1)) {
+            if (idx <= 0 || idx >= MAX_BATTERY_MODULES) idx = 1;
+            if (g_pendingStatReady[idx]) {
+                g_pendingStatReady[idx] = false;
+                publishStat(idx, g_pendingStat[idx]);
+                idx++;
+                break;
+            }
+            idx++;
+            checked++;
+        }
+        if (idx >= MAX_BATTERY_MODULES) idx = 1;
+        nextStatPublishIdx = idx;
+        xSemaphoreGive(g_statMutex);
     }
+    statParserHasData = false;  // legacy flag cleared
+
+    // ---------------------------------------------------------
+    // PUBLISH INFO (gedrosselt: max. 1 pending Modul pro loop)
+    // ---------------------------------------------------------
+    if (g_infoMutex && xSemaphoreTake(g_infoMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        int checked = 0;
+        int idx = nextInfoPublishIdx;
+        while (checked < (MAX_BATTERY_MODULES - 1)) {
+            if (idx <= 0 || idx >= MAX_BATTERY_MODULES) idx = 1;
+            if (g_pendingInfoReady[idx]) {
+                g_pendingInfoReady[idx] = false;
+                publishInfo(idx, g_pendingInfo[idx]);
+                idx++;
+                break;
+            }
+            idx++;
+            checked++;
+        }
+        if (idx >= MAX_BATTERY_MODULES) idx = 1;
+        nextInfoPublishIdx = idx;
+        xSemaphoreGive(g_infoMutex);
+    }
+    infoParserHasData = false;  // legacy flag cleared
 
     // ---------------------------------------------------------
     // DISCOVERY STATE MACHINE
@@ -313,6 +688,17 @@ void PyMqtt::handleDiscoveryStep(
     const StatBuffer& stat
 ) {
     if (!enabled || !mqttClient.connected()) return;
+
+    auto stableModuleCount = [&]() -> size_t {
+        size_t count = 0;
+        if (pwr.stack.batteryCount > 0) count = (size_t)pwr.stack.batteryCount;
+        if (config.detectedModules > count) count = config.detectedModules;
+        if (config.battery.maxModules > 0 && count > config.battery.maxModules) {
+            count = config.battery.maxModules;
+        }
+        return count;
+    };
+
     // ---------------------------------------------------------
     // HUB DISCOVERY OVERRIDE
     // ---------------------------------------------------------
@@ -372,16 +758,22 @@ void PyMqtt::handleDiscoveryStep(
             return;
 
         case DISC_STAT:
-            if (discStatModule >= pwr.modules.size()) {
+            if (discStatModule >= stableModuleCount()) {
+                discoveryPhase = DISC_INFO;
+                discInfoModule = 0;
+                return;
+            }
+            publishDiscoveryStatModule((int)discStatModule + 1);
+            discStatModule++;
+            return;
+
+        case DISC_INFO:
+            if (discInfoModule >= stableModuleCount()) {
                 discoveryPhase = DISC_DONE;
                 return;
             }
-            if (!pwr.modules[discStatModule].present) {
-                discStatModule++;
-                return;
-            }
-            publishDiscoveryStatModule(pwr.modules[discStatModule].index);
-            discStatModule++;
+            publishDiscoveryInfoModule((int)discInfoModule + 1);
+            discInfoModule++;
             return;
     }
 }
@@ -476,6 +868,15 @@ String PyMqtt::computeValue(const String& raw, const FieldConfig& fc) {
     if (fc.factor == "text")
         return raw;
 
+    // If raw is not numeric, keep original text instead of publishing 0.
+    // This avoids broken downstream evaluations for INFO text fields.
+    const char* s = raw.c_str();
+    char* endPtr = nullptr;
+    strtof(s, &endPtr);
+    if (endPtr == s || (endPtr && *endPtr != '\0')) {
+        return raw;
+    }
+
     // Numeric conversion
     float factor = fc.factor.toFloat();
     float valueC = raw.toFloat() * factor;
@@ -541,15 +942,22 @@ String getModuleStatusString() {
    PUBLISH STACK JSON
 --------------------------------------------------------------------------- */
 void PyMqtt::publishStack(const BatteryStack& stack) {
-    if (!enabled || !mqttClient.connected() || !parserHasData) return;
+    if (!enabled || !mqttClient.connected()) return;
 
     String topic = config.mqtt.prefix + "/" + config.mqtt.topicStack;
+    float stackVolt = stack.avgVoltage_mV / 1000.0f;
+    float stackCurr = stack.totalCurrent_mA / 1000.0f;
+    float stackPower = stackCurr * stackVolt;
 
     StaticJsonDocument<256> doc;
-    doc["StackVoltAvg"] = stack.avgVoltage_mV / 1000.0f;
-    doc["StackCurrSum"] = stack.totalCurrent_mA / 1000.0f;
+    doc["StackVoltAvg"] = stackVolt;
+    doc["StackCurrSum"] = stackCurr;
+    doc["StackPower"] = stackPower;
+    doc["StackPowerIn"] = (stackPower > 0.0f) ? stackPower : 0.0f;
+    doc["StackPowerOut"] = (stackPower < 0.0f) ? stackPower : 0.0f;
     doc["StackTempMax"] = stack.temperature / 1000.0f;
     doc["BatteryCount"] = stack.batteryCount;
+    doc["SOC"] = stack.soc;
 
     // Health-State
     doc["HealthState"] = getStackHealthState();
@@ -557,10 +965,17 @@ void PyMqtt::publishStack(const BatteryStack& stack) {
     // Kompakter Modulstatus
     doc["ModuleState"] = getModuleStatusString();
 
-    String payload;
-    serializeJson(doc, payload);
+    serializeJson(doc, s_mqttPayloadBuf, sizeof(s_mqttPayloadBuf));
 
-    mqttClient.publish(topic.c_str(), payload.c_str());
+    static unsigned long lastStackDebugLog = 0;
+    unsigned long now = millis();
+    if (now - lastStackDebugLog > 30000) {
+        logDebug("MQTT stack publish: SOC=" + String(stack.soc) +
+                 " BatteryCount=" + String(stack.batteryCount));
+        lastStackDebugLog = now;
+    }
+
+    mqttClient.publish(topic.c_str(), s_mqttPayloadBuf);
 }
 
 
@@ -568,7 +983,7 @@ void PyMqtt::publishStack(const BatteryStack& stack) {
    PUBLISH PWR MODULE JSON
 --------------------------------------------------------------------------- */
 void PyMqtt::publishBat(int index, const BatteryModule& mod) {
-    if (!enabled || !mqttClient.connected() || !parserHasData || !mod.present)
+    if (!enabled || !mqttClient.connected() || !mod.present)
         return;
 
     String subtopic = config.mqtt.topicPwr;
@@ -576,28 +991,78 @@ void PyMqtt::publishBat(int index, const BatteryModule& mod) {
 
     StaticJsonDocument<512> doc;
 
+    bool anyMqttFieldEnabled = false;
+    bool anyFieldMatched = false;
+    int invalidPwrFieldCount = 0;
+
     for (auto &kv : config.battery.fieldsPwr) {
         const String& fieldName = kv.first;
         const FieldConfig& fc = kv.second;
 
         if (!fc.mqtt) continue;
+        anyMqttFieldEnabled = true;
 
         auto it = mod.fields.find(fieldName);
         if (it == mod.fields.end()) continue;
+        anyFieldMatched = true;
 
         String display = normalizeName(fc.display);
         String value = computeValue(it->second, fc);
 
-        doc[display] = value.c_str();
+        String pwrReason;
+        if (!validatePwrMqttField(fieldName, fc.display, value, pwrReason)) {
+            invalidPwrFieldCount++;
+            static unsigned long lastInvalidPwrLog = 0;
+            unsigned long now = millis();
+            if (now - lastInvalidPwrLog > 3000) {
+                logWarn("MQTT PWR skipped invalid field: module=" + String(index) +
+                        " field='" + fieldName + "' reason=" + pwrReason);
+                lastInvalidPwrLog = now;
+            }
+            continue;
+        }
+
+        // Some setups keep the module index field as text in UI (Power/Battery),
+        // but MQTT consumers expect numeric JSON.
+        bool isPowerIndexField = (fieldName == "Power" ||
+                                  fieldName == "Battery" ||
+                                  display == "Power");
+        if (isPowerIndexField) {
+            double number = 0.0;
+            if (tryParseNumberStrict(value, number)) {
+                doc[display] = number;
+            } else {
+                doc[display] = value;
+            }
+        } else {
+            setTypedJsonValue(doc, display, value, fc);
+        }
 
     }
 
     config.lastMqttContact = config.getCurrentTimeString();
 
-    String payload;
-    serializeJson(doc, payload);
+    if (doc.size() == 0) {
+        static unsigned long lastNoPwrMqttLog = 0;
+        unsigned long now = millis();
+        if (now - lastNoPwrMqttLog > 30000) {
+            if (!anyMqttFieldEnabled) {
+                logWarn("MQTT PWR skipped: no MQTT fields enabled in fieldsPwr");
+            } else if (!anyFieldMatched) {
+                logWarn("MQTT PWR skipped: configured field names do not match parsed PWR keys");
+            } else if (invalidPwrFieldCount > 0) {
+                logWarn("MQTT PWR skipped: payload empty after strict validation");
+            } else {
+                logWarn("MQTT PWR skipped: payload empty after value conversion");
+            }
+            lastNoPwrMqttLog = now;
+        }
+        return;
+    }
 
-    if (!mqttClient.publish(topic.c_str(), payload.c_str()))
+    serializeJson(doc, s_mqttPayloadBuf, sizeof(s_mqttPayloadBuf));
+
+    if (!mqttClient.publish(topic.c_str(), s_mqttPayloadBuf))
         logWarn("MQTT publish failed: " + topic);
 }
 
@@ -610,9 +1075,31 @@ void PyMqtt::publishBatCells(int moduleIndex, const std::vector<BatData>& batCel
 
     String subtopic = config.mqtt.topicBat;
 
+    bool anyMqttFieldEnabled = false;
+    for (auto &kv : config.battery.fieldsBat) {
+        if (kv.second.mqtt) {
+            anyMqttFieldEnabled = true;
+            break;
+        }
+    }
+    if (!anyMqttFieldEnabled) {
+        static unsigned long lastNoBatMqttLog = 0;
+        unsigned long now = millis();
+        if (now - lastNoBatMqttLog > 30000) {
+            logWarn("MQTT BAT skipped: no MQTT fields enabled in fieldsBat");
+            lastNoBatMqttLog = now;
+        }
+        return;
+    }
+
+    bool publishedAnyCell = false;
+    int invalidCellCount = 0;
+
     for (const auto& cell : batCells) {
 
         StaticJsonDocument<512> doc;
+        bool cellValid = true;
+        String invalidReason;
 
         for (auto &f : cell.fields) {
 
@@ -626,18 +1113,65 @@ void PyMqtt::publishBatCells(int moduleIndex, const std::vector<BatData>& batCel
             String key   = fc.display;
             String value = computeValue(f.raw, fc);
 
-            doc[key] = value;
+            if (!validateBatMqttField(f.name, value, invalidReason)) {
+                cellValid = false;
+                invalidReason = "field '" + f.name + "': " + invalidReason;
+                break;
+            }
+
+            setTypedJsonValue(doc, key, value, fc);
         }
 
-        String payload;
-        serializeJson(doc, payload);
+        if (!cellValid) {
+            invalidCellCount++;
+            static unsigned long lastInvalidBatLog = 0;
+            unsigned long now = millis();
+            if (now - lastInvalidBatLog > 3000) {
+                logWarn("MQTT BAT skipped invalid cell: module=" + String(moduleIndex) +
+                        " cell=" + String(cell.cellIndex) + " " + invalidReason);
+                lastInvalidBatLog = now;
+            }
+            continue;
+        }
+
+        if (doc.size() == 0) continue;  // keine MQTT-Felder konfiguriert
+
+        // Add module number (1..N) to every published BAT cell payload.
+        if (moduleIndex < 1 || moduleIndex > 14) {
+            invalidCellCount++;
+            static unsigned long lastInvalidNumberLog = 0;
+            unsigned long now = millis();
+            if (now - lastInvalidNumberLog > 3000) {
+                logWarn("MQTT BAT skipped: module Number out of range [1..14], got " + String(moduleIndex));
+                lastInvalidNumberLog = now;
+            }
+            continue;
+        }
+        doc["Number"] = moduleIndex;
+
+        serializeJson(doc, s_mqttPayloadBuf, sizeof(s_mqttPayloadBuf));
 
         String topic =
             config.mqtt.prefix + "/" + subtopic + "/" +
             String(moduleIndex) + "/" +
             config.mqtt.cellPrefix + String(cell.cellIndex);
 
-        mqttClient.publish(topic.c_str(), payload.c_str());
+        if (mqttClient.publish(topic.c_str(), s_mqttPayloadBuf)) {
+            publishedAnyCell = true;
+        }
+    }
+
+    if (!publishedAnyCell) {
+        static unsigned long lastNoBatMatchLog = 0;
+        unsigned long now = millis();
+        if (now - lastNoBatMatchLog > 30000) {
+            if (invalidCellCount > 0) {
+                logWarn("MQTT BAT skipped: all cells rejected by strict validation");
+            } else {
+                logWarn("MQTT BAT skipped: configured field names do not match parsed BAT keys");
+            }
+            lastNoBatMatchLog = now;
+        }
     }
 }
 
@@ -646,7 +1180,6 @@ void PyMqtt::publishBatCells(int moduleIndex, const std::vector<BatData>& batCel
 --------------------------------------------------------------------------- */
 void PyMqtt::publishStat(int moduleIndex, const StatData& stat) {
     if (!enabled || !mqttClient.connected()) return;
-    if (!config.battery.enableStat) return;
     if (stat.fields.empty()) return;
 
     String subtopic = config.mqtt.topicStat;
@@ -663,14 +1196,15 @@ void PyMqtt::publishStat(int moduleIndex, const StatData& stat) {
         String display = normalizeName(fc.display);
         String value = computeValue(f.raw, fc);
 
-        doc[display] = value.c_str();
+        setTypedJsonValue(doc, display, value, fc);
 
     }
 
-    String payload;
-    serializeJson(doc, payload);
+    if (doc.size() == 0) return;  // keine MQTT-Felder konfiguriert
 
-    if (!mqttClient.publish(topic.c_str(), payload.c_str()))
+    serializeJson(doc, s_mqttPayloadBuf, sizeof(s_mqttPayloadBuf));
+
+    if (!mqttClient.publish(topic.c_str(), s_mqttPayloadBuf))
         logWarn("MQTT publish failed: " + topic);
 }
 /* ---------------------------------------------------------------------------
@@ -765,8 +1299,14 @@ void PyMqtt::publishDiscoveryStack() {
     StaticJsonDocument<256> docStack;
     docStack["StackVoltAvg"] = lastParsedStack.avgVoltage_mV / 1000.0f;
     docStack["StackCurrSum"] = lastParsedStack.totalCurrent_mA / 1000.0f;
+    float stackPower = (lastParsedStack.avgVoltage_mV / 1000.0f) *
+                       (lastParsedStack.totalCurrent_mA / 1000.0f);
+    docStack["StackPower"] = stackPower;
+    docStack["StackPowerIn"] = (stackPower > 0.0f) ? stackPower : 0.0f;
+    docStack["StackPowerOut"] = (stackPower < 0.0f) ? stackPower : 0.0f;
     docStack["StackTempMax"] = lastParsedStack.temperature / 1000.0f;
     docStack["BatteryCount"] = lastParsedStack.batteryCount;
+    docStack["SOC"] = lastParsedStack.soc;
 
     for (JsonPair kv : docStack.as<JsonObject>()) {
 
@@ -795,7 +1335,11 @@ void PyMqtt::publishDiscoveryStack() {
         String unit = "";
         if (key == "StackVoltAvg") unit = "V";
         else if (key == "StackCurrSum") unit = "A";
+        else if (key == "StackPower") unit = "W";
+        else if (key == "StackPowerIn") unit = "W";
+        else if (key == "StackPowerOut") unit = "W";
         else if (key == "StackTempMax") unit = "°C";
+        else if (key == "SOC") unit = "%";
         else if (key == "BatteryCount") unit = "";
 
         // Suggested precision only if different from HA default (0)
@@ -812,9 +1356,17 @@ void PyMqtt::publishDiscoveryStack() {
             doc["device_class"] = "current";
             doc["unit_of_measurement"] = "A";
         }
+        else if (unit == "W") {
+            doc["device_class"] = "power";
+            doc["unit_of_measurement"] = "W";
+        }
         else if (unit == "°C") {
             doc["device_class"] = "temperature";
             doc["unit_of_measurement"] = "°C";
+        }
+        else if (unit == "%") {
+            doc["device_class"] = "battery";
+            doc["unit_of_measurement"] = "%";
         }
 
         doc["state_class"] = "measurement";
@@ -1144,6 +1696,101 @@ void PyMqtt::publishDiscoveryStatModule(int moduleIndex) {
         dev["name"] = prefix + " STAT " + String(moduleIndex);
 
         // Publish retained
+        String payload;
+        serializeJson(doc, payload);
+        mqttClient.publish(discTopic.c_str(), payload.c_str(), true);
+
+        vTaskDelay(5);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   PUBLISH INFO JSON
+--------------------------------------------------------------------------- */
+void PyMqtt::publishInfo(int moduleIndex, const InfoData& info) {
+    if (!enabled || !mqttClient.connected()) return;
+    if (info.fields.empty()) return;
+
+    String subtopic = config.mqtt.topicInfo;
+    String topic = config.mqtt.prefix + "/" + subtopic + "/" + String(moduleIndex);
+
+    StaticJsonDocument<1024> doc;
+
+    for (auto &f : info.fields) {
+
+        if (!config.battery.fieldsInfo.count(f.name)) continue;
+        const FieldConfig &fc = config.battery.fieldsInfo[f.name];
+        if (!fc.mqtt) continue;
+
+        // Some firmwares return placeholder "0" for textual INFO fields.
+        // Skip those to avoid publishing misleading values.
+        String rawTrim = f.raw;
+        rawTrim.trim();
+        bool isTextLike = (fc.factor == "text" || fc.factor == "date" || fc.unit == "timestamp");
+        if (isTextLike && (rawTrim.length() == 0 || rawTrim == "0")) continue;
+
+        String display = normalizeName(fc.display);
+        String value   = computeValue(f.raw, fc);
+        if (value.length() == 0) continue;
+
+        setTypedJsonValue(doc, display, value, fc);
+    }
+
+    if (doc.size() == 0) return;  // keine MQTT-Felder konfiguriert
+
+    String payload;
+    serializeJson(doc, payload);
+
+    if (!mqttClient.publish(topic.c_str(), payload.c_str()))
+        logWarn("MQTT publish failed: " + topic);
+}
+
+/* ---------------------------------------------------------------------------
+   DISCOVERY: INFO MODULE
+--------------------------------------------------------------------------- */
+void PyMqtt::publishDiscoveryInfoModule(int moduleIndex) {
+    if (!enabled || !mqttClient.connected()) return;
+    if (!config.battery.enableInfo) return;
+
+    String prefix     = config.mqtt.prefix;
+    String prefixId   = sanitizeId(prefix);
+    String subtopic   = config.mqtt.topicInfo;
+    String subtopicId = sanitizeId(subtopic);
+
+    String stateTopic =
+        prefix + "/" + subtopic + "/" + String(moduleIndex);
+
+    for (auto &kv : config.battery.fieldsInfo) {
+
+        const FieldConfig& fc = kv.second;
+        if (!fc.mqtt) continue;
+
+        String displayKey = normalizeName(fc.display);
+        String friendly   = fc.display;
+
+        String uniqueId =
+            prefixId + "_" +
+            subtopicId + "_" +
+            String(moduleIndex) + "_" +
+            sanitizeId(displayKey);
+
+        String discTopic =
+            "homeassistant/sensor/" + uniqueId + "/config";
+
+        StaticJsonDocument<512> doc;
+
+        doc["name"]           = friendly;
+        doc["uniq_id"]        = uniqueId;
+        doc["obj_id"]         = uniqueId;
+        doc["state_topic"]    = stateTopic;
+        doc["value_template"] = "{{ value_json." + displayKey + " }}";
+
+        addDiscoveryMeta(doc, fc);
+
+        JsonObject dev = doc.createNestedObject("dev");
+        dev["ids"]  = prefixId + "_info_" + String(moduleIndex);
+        dev["name"] = prefix + " INFO " + String(moduleIndex);
+
         String payload;
         serializeJson(doc, payload);
         mqttClient.publish(discTopic.c_str(), payload.c_str(), true);

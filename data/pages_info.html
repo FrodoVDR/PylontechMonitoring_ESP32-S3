@@ -1,0 +1,49 @@
+<div class="content">
+
+    <h2>Info</h2>
+    <div id="cache_ts_info" style="margin-bottom:10px;color:#666;font-size:13px;">Cache: -</div>
+    <div id="info_status_text" style="margin-bottom:10px;color:#0a4a7a;font-size:13px;">Status: -</div>
+    <div id="info_source_text" style="margin-bottom:10px;color:#3b3b3b;font-size:13px;">Quelle: -</div>
+
+    <div class="conn-grid-3">
+
+        <div class="conn-box">
+            <div class="conn-header">INFO Parser</div>
+            <div class="conn-body">
+                <label>
+                    <input id="enable_info" type="checkbox">
+                </label>
+            </div>
+        </div>
+
+        <div class="conn-box">
+            <div class="conn-header">MQTT Subtopic</div>
+            <div class="conn-body">
+                <label>Topic INFO<br>
+                    <input id="topic_info" type="text">
+                </label>
+            </div>
+        </div>
+
+        <div class="conn-box">
+            <div class="conn-header">Abfrageintervall</div>
+            <div class="conn-body">
+                <label>INFO (Sekunden)<br>
+                    <input id="interval_info" type="number">
+                </label>
+            </div>
+        </div>
+
+    </div>
+
+    <div id="info_groups"></div>
+
+    <table id="info_table"></table>
+    <br>
+    <button onclick="refreshInfo()">Daten abrufen</button>
+    &nbsp;
+    <button onclick="saveInfoSettings()">Speichern</button>
+
+</div>
+
+<script src="/static_info.js"></script>

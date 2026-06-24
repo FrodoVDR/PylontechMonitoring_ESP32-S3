@@ -1,12 +1,80 @@
 // -------------------------------------------------------------
-// init
+// init (called by window.addEventListener load below)
 // -------------------------------------------------------------
-function initConnectionPage() {
+async function initConnectionPage() {
+    ethLoad();
     wifiLoadStatus();
     mqttLoad();
-    tzLoad();
+    await tzLoad(); // Must finish before timeLoad so TZDATA is ready
     timeLoad();
     ipLoad();
+}
+
+// -------------------------------------------------------------
+// Ethernet
+// -------------------------------------------------------------
+function ethLoad() {
+    fetch("/api/eth")
+        .then(r => r.json())
+        .then(j => {
+            const linked    = j.linked    ? "▲ Link up"   : "▼ Link down";
+            const connected = j.connected ? `IP: ${j.ip}` : "No IP";
+            document.getElementById("eth_status").textContent =
+                `Enabled: ${j.enabled}  |  ${linked}  |  ${connected}  |  MAC: ${j.mac}  |  Speed: ${j.speed} Mbit/s`;
+
+            document.getElementById("eth_enabled").checked   = j.enabled;
+            document.getElementById("eth_miso_pin").value    = j.miso_pin  ?? 12;
+            document.getElementById("eth_mosi_pin").value    = j.mosi_pin  ?? 11;
+            document.getElementById("eth_sclk_pin").value    = j.sclk_pin  ?? 13;
+            document.getElementById("eth_cs_pin").value      = j.cs_pin    ?? 14;
+            document.getElementById("eth_rst_pin").value     = j.rst_pin   ?? 9;
+            document.getElementById("eth_int_pin").value     = j.int_pin   ?? 10;
+            document.getElementById("eth_phy_addr").value    = j.phy_addr  ?? 1;
+
+            document.getElementById("eth_dhcp").checked = j.eth_dhcp ?? true;
+            document.getElementById("eth_ip_addr").value = j.eth_ip   ?? "";
+            document.getElementById("eth_ip_mask").value = j.eth_mask ?? "";
+            document.getElementById("eth_ip_gw").value   = j.eth_gw   ?? "";
+            document.getElementById("eth_ip_dns").value  = j.eth_dns  ?? "";
+            ethToggleDhcp();
+        })
+        .catch(() => {
+            document.getElementById("eth_status").textContent = "Ethernet not available";
+        });
+}
+
+function ethToggleDhcp() {
+    const dhcp = document.getElementById("eth_dhcp").checked;
+    document.getElementById("eth_static_box").style.display = dhcp ? "none" : "block";
+}
+
+function ethSave() {
+    let data = {
+        enabled:  document.getElementById("eth_enabled").checked,
+        miso_pin: Number(document.getElementById("eth_miso_pin").value),
+        mosi_pin: Number(document.getElementById("eth_mosi_pin").value),
+        sclk_pin: Number(document.getElementById("eth_sclk_pin").value),
+        cs_pin:   Number(document.getElementById("eth_cs_pin").value),
+        rst_pin:  Number(document.getElementById("eth_rst_pin").value),
+        int_pin:  Number(document.getElementById("eth_int_pin").value),
+        phy_addr: Number(document.getElementById("eth_phy_addr").value),
+        eth_dhcp: document.getElementById("eth_dhcp").checked,
+        eth_ip:   document.getElementById("eth_ip_addr").value,
+        eth_mask: document.getElementById("eth_ip_mask").value,
+        eth_gw:   document.getElementById("eth_ip_gw").value,
+        eth_dns:  document.getElementById("eth_ip_dns").value
+    };
+
+    fetch("/api/eth", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(data)
+    })
+    .then(r => r.text())
+    .then(t => {
+        document.getElementById("eth_msg").textContent = t;
+        ethLoad();
+    });
 }
 
 // -------------------------------------------------------------
@@ -183,7 +251,7 @@ let TZDATA = {};
 let CURRENT_NTP_SERVER = "";
 
 function tzLoad() {
-    fetch("/timezone.json")
+    return fetch("/timezone.json")
         .then(r => r.json())
         .then(j => {
             TZDATA = j;
@@ -197,8 +265,7 @@ function tzLoad() {
                 o.textContent = region;
                 regionSel.appendChild(o);
             });
-
-            tzRegionChanged();
+            // Do NOT call tzRegionChanged here – timeLoad will set region+city correctly
         });
 }
 
@@ -207,6 +274,8 @@ function tzRegionChanged() {
     let citySel = document.getElementById("tz_city");
     citySel.innerHTML = "";
 
+    if (!TZDATA[region]) return;
+
     TZDATA[region].forEach(e => {
         let o = document.createElement("option");
         o.value = e.tz;
@@ -214,7 +283,7 @@ function tzRegionChanged() {
         citySel.appendChild(o);
     });
 
-    tzCityChanged();
+    // Do NOT call tzCityChanged() here – caller must set tz_city.value and then call it
 }
 
 function tzCityChanged() {
@@ -235,19 +304,22 @@ function timeLoad() {
             document.getElementById("ntp_manual").checked  = j.manual_ntp;
             document.getElementById("time_manual").checked = j.manual_mode;
 
-            // Manual NTP Eingabefeld: immer pool.ntp.org
-            document.getElementById("ntp_server").value = "pool.ntp.org";
+            // NTP Server aus API-Antwort setzen
+            document.getElementById("ntp_server").value = j.server || "pool.ntp.org";
 
             // Manual Time Felder
             document.getElementById("time_date").value = j.manual_date;
             document.getElementById("time_time").value = j.manual_time;
             document.getElementById("time_dst").checked = j.manual_dst;
 
-            // Timezone korrekt setzen
-            let [region, city] = j.timezone.split("/");
+            // Timezone korrekt setzen (TZDATA ist jetzt geladen dank await tzLoad())
+            let tzStr = j.timezone || "Europe/Berlin";
+            let slashIdx = tzStr.indexOf("/");
+            let region = slashIdx > 0 ? tzStr.substring(0, slashIdx) : "Europe";
             document.getElementById("tz_region").value = region;
-            tzRegionChanged();
-            document.getElementById("tz_city").value = j.timezone;
+            tzRegionChanged();  // füllt tz_city-Dropdown mit Städten der Region
+            document.getElementById("tz_city").value = tzStr;
+            tzCityChanged();    // überträgt Wert in tz_full hidden field
 
             // API-Server merken und anzeigen
             CURRENT_NTP_SERVER = j.server;
@@ -266,15 +338,18 @@ function timeLoad() {
 // Save to API
 // -------------------------------------------------------------
 function timeSave() {
+    // Read directly from tz_city dropdown – most reliable source
+    let tz = document.getElementById("tz_city").value || "Europe/Berlin";
+
     let data = {
         manual_mode: document.getElementById("time_manual").checked,
         manual_date: document.getElementById("time_date").value,
         manual_time: document.getElementById("time_time").value,
         manual_dst: document.getElementById("time_dst").checked,
         use_gateway_ntp: document.getElementById("ntp_gateway").checked,
-        manual_ntp: document.getElementById("ntp_manual").checked,
+        manual_ntp:      document.getElementById("ntp_manual").checked,
         server: document.getElementById("ntp_server").value,
-        timezone: document.getElementById("tz_full").value
+        timezone: tz
     };
 
     fetch("/api/time", {
@@ -338,13 +413,18 @@ function ipSave() {
 // -------------------------------------------------------------
 // Init
 // -------------------------------------------------------------
-window.addEventListener("load", () => {
+window.addEventListener("load", async () => {
+    ethLoad();
     wifiLoadStatus();
     mqttLoad();
-    tzLoad();
+    await tzLoad(); // Must finish before timeLoad so TZDATA is ready
     timeLoad();
     ipLoad();
 
-    document.getElementById("tz_region").addEventListener("change", tzRegionChanged);
+    // When user manually changes region: rebuild city list and update tz_full with first city
+    document.getElementById("tz_region").addEventListener("change", () => {
+        tzRegionChanged();
+        tzCityChanged(); // pick first city of new region
+    });
     document.getElementById("tz_city").addEventListener("change", tzCityChanged);
 });

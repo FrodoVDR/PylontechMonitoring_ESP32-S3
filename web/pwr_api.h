@@ -1,119 +1,95 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <esp_heap_caps.h>
 #include "../wp_webserver.h"
 #include "../py_parser_pwr.h"
+#include "../py_scheduler.h"
 #include "../config.h"
+#include "api_cache.h"
+
+struct PwrSpiRamAllocator {
+    void* allocate(size_t size) {
+        return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+
+    void deallocate(void* pointer) {
+        heap_caps_free(pointer);
+    }
+
+    void* reallocate(void* ptr, size_t new_size) {
+        return heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+};
+
+using PwrSpiRamJsonDocument = BasicJsonDocument<PwrSpiRamAllocator>;
 
 static void handleApiPwrBase();
+static void handleApiPwrSet();
 
 static void registerPwrAPI() {
-    server.on("/api/pwr/base", HTTP_GET, handleApiPwrBase);
+    server.on("/api/pwr/base", HTTP_GET,  handleApiPwrBase);
+    server.on("/api/pwr/set",  HTTP_POST, handleApiPwrSet);
+    server.on("/api/pwr/refresh", HTTP_POST, []() {
+        apiCacheClear("pwr_base");
+        py_scheduler.enqueue("pwr");
+        server.send(200, "text/plain", "PWR refresh queued");
+    });
 }
 
 static void handleApiPwrBase() {
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "application/json", "");
-
-    server.sendContent("{");
-
-    // ---------------------------------------------------------
-    // CONFIG BLOCK
-    // ---------------------------------------------------------
-    server.sendContent("\"config\":{");
-
-    server.sendContent("\"intervalPwr\":");
-    server.sendContent(String(config.battery.intervalPwr));
-    server.sendContent(",");
-
-    server.sendContent("\"useFahrenheit\":");
-    server.sendContent(config.battery.useFahrenheit ? "true" : "false");
-
-    server.sendContent("},");
-
-    // ---------------------------------------------------------
-    // MQTT BLOCK
-    // ---------------------------------------------------------
-    server.sendContent("\"mqtt\":{");
-
-    server.sendContent("\"topicStack\":\"");
-    server.sendContent(config.mqtt.topicStack);
-    server.sendContent("\",");
-
-    server.sendContent("\"topicPwr\":\"");
-    server.sendContent(config.mqtt.topicPwr);
-    server.sendContent("\"");
-
-    server.sendContent("},");
-
-    // ---------------------------------------------------------
-    // HEADERS
-    // ---------------------------------------------------------
-    server.sendContent("\"headers\":[");
-    for (size_t i = 0; i < lastParserHeader.size(); i++) {
-        if (i > 0) server.sendContent(",");
-        server.sendContent("\"");
-        server.sendContent(lastParserHeader[i]);
-        server.sendContent("\"");
+    String cached = apiCacheLoad("pwr_base");
+    if (cached.length() > 0) {
+        server.send(200, "application/json", cached);
+        return;
     }
-    server.sendContent("],");
 
-    // ---------------------------------------------------------
-    // VALUES
-    // ---------------------------------------------------------
-    server.sendContent("\"values\":[");
-    for (size_t i = 0; i < lastParserValues.size(); i++) {
-        if (i > 0) server.sendContent(",");
-        server.sendContent("\"");
-        server.sendContent(lastParserValues[i]);
-        server.sendContent("\"");
-    }
-    server.sendContent("],");
+    PwrSpiRamJsonDocument doc(8192);
 
-    // ---------------------------------------------------------
-    // FIELDS (NUR NVS-FELDER!)
-    // ---------------------------------------------------------
-    server.sendContent("\"fields\":[");
+    JsonObject cfg = doc.createNestedObject("config");
+    cfg["intervalPwr"] = config.battery.intervalPwr;
+    cfg["useFahrenheit"] = config.battery.useFahrenheit;
 
-    bool firstField = true;
+    JsonObject mqtt = doc.createNestedObject("mqtt");
+    mqtt["topicStack"] = config.mqtt.topicStack;
+    mqtt["topicPwr"] = config.mqtt.topicPwr;
 
+    JsonArray headers = doc.createNestedArray("headers");
+    JsonArray values  = doc.createNestedArray("values");
+    JsonArray fields  = doc.createNestedArray("fields");
+
+    bool hasLive = !lastParserHeader.empty();
     for (size_t i = 0; i < lastParserHeader.size(); i++) {
-
         const String &name = lastParserHeader[i];
+        String raw = (i < lastParserValues.size()) ? lastParserValues[i] : "";
+        headers.add(name);
+        values.add(raw);
 
-        // Nur Felder aus dem NVS zurückgeben
-        if (!config.battery.fieldsPwr.count(name)) {
-            continue;   // <--- WICHTIG!
-        }
-
+        if (!config.battery.fieldsPwr.count(name)) continue;
         const FieldConfig &f = config.battery.fieldsPwr.at(name);
-
-        String raw = "";
-        if (i < lastParserValues.size()) raw = lastParserValues[i];
-
-        DynamicJsonDocument doc(256);
-        JsonObject o = doc.to<JsonObject>();
-
-        o["name"]        = name;
-        o["display"]     = f.display;
-        o["factor"]      = f.factor;
-        o["unit"]        = f.unit;
-        o["sendMQTT"]    = f.mqtt;
+        JsonObject o = fields.createNestedObject();
+        o["name"] = name;
+        o["display"] = f.display;
+        o["factor"] = f.factor;
+        o["unit"] = f.unit;
+        o["sendMQTT"] = f.mqtt;
         o["sendPayload"] = f.send;
-        o["raw"]         = raw;
-        o["value"]       = raw;
-
-        String tmp;
-        serializeJson(o, tmp);
-
-        if (!firstField) server.sendContent(",");
-        firstField = false;
-
-        server.sendContent(tmp);
+        o["raw"] = raw;
+        o["value"] = raw;
     }
 
-    server.sendContent("]");
+    doc["cacheTimestamp"] = hasLive ? (uint32_t)millis() : 0;
 
-    server.sendContent("}");
+    if (hasLive) {
+        String cacheOut;
+        serializeJson(doc, cacheOut);
+        apiCacheSave("pwr_base", cacheOut);
+    } else {
+        py_scheduler.enqueue("pwr");
+    }
+
+    server.setContentLength(measureJson(doc));
+    server.send(200, "application/json", "");
+    serializeJson(doc, server.client());
 }
 
 static void handleApiPwrSet() {
@@ -123,7 +99,7 @@ static void handleApiPwrSet() {
         return;
     }
 
-    DynamicJsonDocument req(4096);
+    PwrSpiRamJsonDocument req(4096);
     if (deserializeJson(req, server.arg("plain"))) {
         server.send(400, "text/plain", "Invalid JSON");
         return;
@@ -166,7 +142,10 @@ static void handleApiPwrSet() {
     }
 
     discoveryPwrNeeded = true;
-    config.save();
+    config.savePwrConfig();      // intervalPwr, useFahrenheit
+    config.savePwrFields();      // fieldsPwr
+    config.saveSystemConfig();   // topicPwr, topicStack (MQTT topics in system namespace)
+    apiCacheClear("pwr_base");
 
     server.send(200, "text/plain", "PWR settings saved");
 }

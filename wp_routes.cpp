@@ -2,7 +2,7 @@
 #include "wp_webserver.h"
 
 #include "web/api_core.h"
-//#include "web/dashboard_api.h"
+#include "web/dashboard_api.h"
 //#include "web/filemanager_api.h"
 //#include "web/runtime_api.h"
 #include "web/api_combined.h"
@@ -15,12 +15,14 @@
 #include "web/wp_health_api.h"
 #include "web/service_api.h"
 #include "web/framedump_api.h"
-//#include "web/cpu_api.h"
+#include "web/cpu_api.h"
+#include "web/info_api.h"
+#include "web/monitoring_api.h"
 
 void registerRoutes() {
 
     registerServiceAPI(server);
-    //registerDashboardAPI();
+    registerDashboardAPI(server);
     //registerFileManagerAPI();
     //registerRuntimeAPI();
     registerCombinedAPI();
@@ -31,10 +33,15 @@ void registerRoutes() {
     //registerPylontechAPI();
     registerHealthAPI();
     registerFramedumpApi();
+    registerInfoAPI();
+    registerMonitoringAPI();
 
     server.on("/api/wifi", HTTP_GET, apiWifiGet);
     server.on("/api/wifi", HTTP_POST, apiWifiPost);
     server.on("/api/wifi/scan", HTTP_GET, apiWifiScan);
+
+    server.on("/api/eth", HTTP_GET, apiEthGet);
+    server.on("/api/eth", HTTP_POST, apiEthPost);
 
     server.on("/api/mqtt", HTTP_GET, apiMqttGet);
     server.on("/api/mqtt", HTTP_POST, apiMqttPost);
@@ -45,8 +52,8 @@ void registerRoutes() {
     server.on("/api/network", HTTP_GET, apiNetworkGet);
     server.on("/api/network", HTTP_POST, apiNetworkPost);
 
+    server.on("/api/cpu", HTTP_GET, handleCpuApi);
+
     server.serveStatic("/", SPIFFS, "/index.html");
     server.serveStatic("/", SPIFFS, "/");
-
-    //server.on("/api/cpu", HTTP_GET, handleCpuApi);
 }

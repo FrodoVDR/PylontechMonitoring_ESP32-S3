@@ -1,7 +1,7 @@
 // ---------------------------------------------------------
 // Auto‑Reload Steuerung
 // ---------------------------------------------------------
-let healthAutoReload = true;
+if (typeof window.healthAutoReload === "undefined") window.healthAutoReload = true;
 
 
 // ---------------------------------------------------------
@@ -79,7 +79,7 @@ function healthReset() {
 function saveHealthConfig() {
 
     // Auto‑Reload wieder aktivieren
-    healthAutoReload = true;
+    window.healthAutoReload = true;
 
     let warn  = parseFloat(document.getElementById("cellDiffWarn").value);
     let error = parseFloat(document.getElementById("cellDiffError").value);
@@ -101,7 +101,7 @@ function saveHealthConfig() {
 // Auto‑Reload alle 2 Sekunden (nur wenn erlaubt)
 // ---------------------------------------------------------
 setInterval(() => {
-    if (healthAutoReload) loadHealth();
+    if (window.healthAutoReload) loadHealth();
 }, 2000);
 
 

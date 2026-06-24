@@ -26,8 +26,6 @@ static unsigned long apDisableDuration = 0;
 static unsigned long staLostTime = 0;
 static unsigned long lastRetry   = 0;
 
-static bool otaStarted       = false;
-
 // NTP / time handling
 static bool ntpInitialSynced     = false;
 static unsigned long lastNtpResyncMillis = 0;
@@ -176,7 +174,7 @@ static void handleNtpLogic() {
         // Zeit erneut holen (jetzt mit DST)
         String t = config.getCurrentTimeString();
         config.currentTime = t;
-        config.save();
+        config.saveSystemConfig();  // Nur System-Config speichern, KEINE Field-Maps (zu heap-intensiv)
 
         Log(LOG_INFO, "WiFiManager: NTP initial sync → " + t);
     }
@@ -227,8 +225,9 @@ void WiFiManagerModule::loop() {
                 Log(LOG_INFO, "WiFiManager: AP will stop in 90s (STA connected)");
             }
 
-            // Start OTA once
-            if (!otaStarted) {
+            // Start OTA once (shared with EthManager via config.otaStarted)
+            if (!config.otaStarted) {
+                config.otaStarted = true;
                 ArduinoOTA.setHostname(config.hostname.c_str());
                 if (MDNS.begin(config.hostname.c_str())) {
                     Log(LOG_INFO, "WiFiManager: mDNS started: " + config.hostname);
@@ -236,7 +235,6 @@ void WiFiManagerModule::loop() {
                     Log(LOG_WARN, "WiFiManager: mDNS start failed");
                 }
                 ArduinoOTA.begin();
-                otaStarted = true;
                 Log(LOG_INFO, "WiFiManager: OTA ready");
             }
 
@@ -312,7 +310,7 @@ void WiFiManagerModule::loop() {
     // OTA + NTP handling
     // ----------------------------------------------------
     if (WiFi.status() == WL_CONNECTED) {
-        if (otaStarted) {
+        if (config.otaStarted) {
             ArduinoOTA.handle();
         }
         handleNtpLogic();
@@ -436,4 +434,9 @@ void WiFiManagerModule::setManualTime(int year, int month, int day, int hour, in
     config.save();
 
     Log(LOG_WARN, "WiFiManager: manual time set → " + cur + " (DST=" + String(dst ? "on" : "off") + ")");
+}
+
+// Apply current timezone from config to system
+void WiFiManagerModule::applyTimezone() {
+    applyTimezoneFromConfig();
 }

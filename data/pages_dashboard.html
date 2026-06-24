@@ -7,7 +7,16 @@
         <p><b>Mode:</b> <span id="wifi_mode"></span></p>
         <p><b>SSID:</b> <span id="wifi_ssid"></span></p>
         <p><b>IP:</b> <span id="wifi_ip"></span></p>
+        <p><b>MAC:</b> <span id="wifi_mac"></span></p>
         <p><b>RSSI:</b> <span id="wifi_rssi"></span> dBm</p>
+    </div>
+
+    <div class="card" id="lanCard">
+        <h2>LAN</h2>
+        <p><b>Status:</b> <span id="lan_status"></span></p>
+        <p><b>IP:</b> <span id="lan_ip"></span></p>
+        <p><b>MAC:</b> <span id="lan_mac"></span></p>
+        <p><b>Speed:</b> <span id="lan_speed"></span></p>
     </div>
 
     <div class="card" id="mqttCard">
@@ -20,14 +29,29 @@
     <div class="card" id="batteryCard">
         <h2>Batterie</h2>
         <p><b>Detected modules:</b> <span id="bat_modules"></span></p>
+        <p><b>SOC (Stack):</b> <span id="bat_soc"></span> %</p>
         <p><b>Last update:</b> <span id="bat_last"></span></p>
+    </div>
+
+    <div class="card" id="stackCard">
+        <h2>Stack Status</h2>
+        <p><b>Voltage:</b> <span id="stack_volt"></span> V</p>
+        <p><b>Current:</b> <span id="stack_curr"></span> A</p>
+        <p><b>Power:</b> <span id="stack_power"></span> W</p>
+        <p><b>Power In:</b> <span id="stack_power_in"></span> W</p>
+        <p><b>Power Out:</b> <span id="stack_power_out"></span> W</p>
+        <p><b>Temp Max:</b> <span id="stack_temp"></span> °C</p>
     </div>
 
     <div class="card" id="systemCard">
         <h2>System</h2>
-        <p><b>Time:</b> <span id="sys_time"></span></p>
+        <p><b>Time:</b> <span id="sys_time"></span><br><span id="sys_timezone" style="font-size:0.85em;color:#666"></span></p>
         <p><b>Uptime:</b> <span id="sys_uptime"></span></p>
         <p><b>Firmware:</b> <span id="sys_fw"></span></p>
+        <p style="margin-top:12px">
+            <button onclick="dashReboot()" style="background:#c0392b;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer">Reboot</button>
+            <span id="reboot_msg" style="margin-left:10px;font-size:0.85em"></span>
+        </p>
     </div>
 
 </div>

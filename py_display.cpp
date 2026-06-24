@@ -6,16 +6,19 @@
 extern HealthStatus health;
 
 // Display-Pins
-#define TFT_CS     23
-#define TFT_DC     27
-#define TFT_RST    26
+// Hinweis: GPIO 23, 26, 27, 33 sind auf dem ESP32-S3 WROOM-Modul nicht
+// als externe Pins verfügbar (26-32 intern für Octal-SPI-Flash reserviert).
+// Pins können je nach Verdrahtung angepasst werden.
+#define TFT_CS     38
+#define TFT_DC     39
+#define TFT_RST    40
 
 #define TFT_SCK    14
 #define TFT_MOSI   13
 #define TFT_MISO   12
 
 // Backlight-Pin (PWM)
-#define TFT_BL          33
+#define TFT_BL          41
 #define TFT_BL_CHANNEL  LEDC_CHANNEL_0
 #define TFT_BL_TIMER    LEDC_TIMER_0
 
@@ -58,7 +61,7 @@ String formatCurrent(float amps) {
 void PyDisplay::begin() {
     // LEDC-Timer konfigurieren
     ledc_timer_config_t timer = {};
-    timer.speed_mode       = LEDC_HIGH_SPEED_MODE;
+    timer.speed_mode       = LEDC_LOW_SPEED_MODE;   // ESP32-S3: nur Low-Speed-Mode verfügbar
     timer.duty_resolution  = LEDC_TIMER_8_BIT;
     timer.timer_num        = TFT_BL_TIMER;
     timer.freq_hz          = 5000;
@@ -68,7 +71,7 @@ void PyDisplay::begin() {
     // LEDC-Channel konfigurieren
     ledc_channel_config_t ch = {};
     ch.gpio_num       = TFT_BL;
-    ch.speed_mode     = LEDC_HIGH_SPEED_MODE;
+    ch.speed_mode     = LEDC_LOW_SPEED_MODE;
     ch.channel        = TFT_BL_CHANNEL;
     ch.intr_type      = LEDC_INTR_DISABLE;
     ch.timer_sel      = TFT_BL_TIMER;
@@ -88,8 +91,8 @@ void PyDisplay::begin() {
 }
 
 void PyDisplay::setBrightness(uint8_t value) {
-    ledc_set_duty(LEDC_HIGH_SPEED_MODE, TFT_BL_CHANNEL, value);
-    ledc_update_duty(LEDC_HIGH_SPEED_MODE, TFT_BL_CHANNEL);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, TFT_BL_CHANNEL, value);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, TFT_BL_CHANNEL);
 }
 
 void PyDisplay::drawStaticUI() {

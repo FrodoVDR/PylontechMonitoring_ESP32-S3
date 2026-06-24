@@ -1,5 +1,71 @@
 <h2>Connection</h2>
 
+<!-- ETHERNET -------------------------------------------------------- -->
+<div class="conn-box eth-box">
+    <div class="conn-header eth-header">Ethernet (W5500 SPI)</div>
+    <div class="conn-body">
+
+        <div id="eth_status">Loading Ethernet status…</div>
+
+        <h4>Hardware Config <small style="font-weight:normal">(reboot required)</small></h4>
+        <table class="conn-table">
+            <tr>
+                <td>Enable:</td>
+                <td><input type="checkbox" id="eth_enabled"></td>
+            </tr>
+            <tr>
+                <td>MISO Pin:</td>
+                <td><input type="number" id="eth_miso_pin" min="0" max="48" style="width:70px"> <small>default 12</small></td>
+            </tr>
+            <tr>
+                <td>MOSI Pin:</td>
+                <td><input type="number" id="eth_mosi_pin" min="0" max="48" style="width:70px"> <small>default 11</small></td>
+            </tr>
+            <tr>
+                <td>SCLK Pin:</td>
+                <td><input type="number" id="eth_sclk_pin" min="0" max="48" style="width:70px"> <small>default 13</small></td>
+            </tr>
+            <tr>
+                <td>CS Pin:</td>
+                <td><input type="number" id="eth_cs_pin" min="0" max="48" style="width:70px"> <small>default 14</small></td>
+            </tr>
+            <tr>
+                <td>RST Pin:</td>
+                <td><input type="number" id="eth_rst_pin" min="-1" max="48" style="width:70px"> <small>default 9</small></td>
+            </tr>
+            <tr>
+                <td>INT Pin:</td>
+                <td><input type="number" id="eth_int_pin" min="-1" max="48" style="width:70px"> <small>default 10</small></td>
+            </tr>
+            <tr>
+                <td>PHY Addr:</td>
+                <td><input type="number" id="eth_phy_addr" min="0" max="31" style="width:70px"> <small>default 1</small></td>
+            </tr>
+            <tr>
+                <td></td>
+                <td><button class="btn-save" onclick="ethSave()">Save</button></td>
+            </tr>
+        </table>
+
+        <h4>IP Configuration <small style="font-weight:normal">(reboot required)</small></h4>
+        <label>
+            <input type="checkbox" id="eth_dhcp" onchange="ethToggleDhcp()">
+            DHCP
+        </label>
+        <div id="eth_static_box" style="display:none; margin-top:8px;">
+            <table class="conn-table">
+                <tr><td>IP Address:</td><td><input type="text" id="eth_ip_addr"></td></tr>
+                <tr><td>Subnet Mask:</td><td><input type="text" id="eth_ip_mask"></td></tr>
+                <tr><td>Gateway:</td><td><input type="text" id="eth_ip_gw"></td></tr>
+                <tr><td>DNS:</td><td><input type="text" id="eth_ip_dns"></td></tr>
+            </table>
+        </div>
+
+        <div id="eth_msg" class="msg"></div>
+    </div>
+</div>
+
+
 <!-- WIFI ------------------------------------------------------------ -->
 <div class="conn-box wifi-box">
     <div class="conn-header wifi-header">WiFi</div>
@@ -131,9 +197,9 @@
 
 
 
-<!-- IP CONFIG ------------------------------------------------------- -->
+<!-- IP CONFIG (WiFi) ----------------------------------------------- -->
 <div class="conn-box ip-box">
-    <div class="conn-header ip-header">IP Configuration</div>
+    <div class="conn-header ip-header">WiFi IP Configuration</div>
     <div class="conn-body">
 
         <label>

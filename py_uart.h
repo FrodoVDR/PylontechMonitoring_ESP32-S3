@@ -8,6 +8,7 @@ public:
 
     // Blocking command → fills lastRawFrame
     bool sendCommand(const char* cmd);
+    void recoverConsole();
 
     // Frame access for realtimeTask()
     bool hasFrame() const { return frameReady; }
@@ -19,10 +20,11 @@ public:
     bool isBusy() const { return busy; }
     String getLastCommand() const { return lastCommand; }
 
-    // Last frames for web UI
-    String getLastPwrFrame() const { return lastPwrFrame; }
-    String getLastBatFrame() const { return lastBatFrame; }
-    String getLastStatFrame() const { return lastStatFrame; }
+    // HUB mode: passive frame listener (non-blocking)
+    bool pollHubFrame();
+
+    // Last raw frame for web UI (framedump). Per-type copies were removed:
+    // their getters were never called and they churned internal DRAM heap.
     String getLastRawFrame() const { return lastRawFrame; }
 
 private:
@@ -36,13 +38,12 @@ private:
     bool frameReady = false;
     bool frameValid = false;
 
+    // HUB mode passive listening buffer
+    String hubBuf;
+
     int rxPin = -1;
     int txPin = -1;
 
     String lastCommand;
     String lastRawFrame;
-
-    String lastPwrFrame;
-    String lastBatFrame;
-    String lastStatFrame;
 };

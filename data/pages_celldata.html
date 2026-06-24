@@ -1,6 +1,9 @@
 <div class="content">
 
 <h2>Celldata</h2>
+<div id="cache_ts_bat" style="margin-bottom:10px;color:#666;font-size:13px;">Cache: -</div>
+<div id="bat_status_text" style="margin-bottom:10px;color:#0a4a7a;font-size:13px;">Status: -</div>
+<div id="bat_source_text" style="margin-bottom:10px;color:#3b3b3b;font-size:13px;">Quelle: -</div>
 
 <div class="conn-grid-3">
 
@@ -58,6 +61,8 @@
             <tbody id="bat_table"></tbody>
         </table>
 
+        <button onclick="refreshBat()">Daten abrufen</button>
+        &nbsp;
         <button onclick="batSave()">Speichern</button>
     </div>
 </div>

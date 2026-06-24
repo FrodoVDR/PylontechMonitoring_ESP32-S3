@@ -1,78 +1,322 @@
-# Pylontech Battery Monitoring via WiFi and LAN
-Forked from irekzielinski/Pylontech-Battery-Monitoring
+# Pylontech Battery Monitoring
 
-This project allows you to control and monitor Pylontech US2000B, US2000C, US3000C and US5000 batteries via console port over WiFi.
-It it's a great starting point to integrate battery with your home automation.
+> **⚠️ HAFTUNGSAUSSCHLUSS: Ich übernehme keinerlei Verantwortung für etwaige Schäden. Nutzung auf eigene Gefahr.**
 
-**I ACCEPT NO RESPONSIBILTY FOR ANY DAMAGE CAUSED, PROCEED AT YOUR OWN RISK**
-
-# Features:
-  * Low cost (around 20$ in total).
-  * Adds WiFi capability to your Pylontech US2000B/C , US3000C, US5000 battery.
-  * Device exposes web interface that allows to:
-    * send console commands and read response over WiFi (no PC needed)
-  * MQTT support:
-    * device pushes basic battery data like SOC, temperature, state, etc to selected MQTT server
-  * Easy to modify code using Arduino IDE and flash new firmware over WiFi (no need to disconnect from the battery).
-  * choose dhcp or static ip
-
-See the project in action on [Youtube](https://youtu.be/7VyQjKU3MsU):</br>
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=7VyQjKU3MsU" target="_blank"><img src="http://img.youtube.com/vi/7VyQjKU3MsU/0.jpg" alt="See the project in action on YouTube" width="240" height="180" border="10" /></a>
-
-
-# Parts needed and schematics:
-  * [ESP32 microcontroller](https://www.amazon.de/AZDelivery-ESP32-NodeMCU-gratis-eBook/dp/B07Z83MF5W/ref=pd_ci_mcx_mh_mcx_views_0_title?pd_rd_w=F1gm6&content-id=amzn1.sym.bbac26bb-3f7b-44dd-a8a5-c10fcfb1ed60%3Aamzn1.symc.30e3dbb4-8dd8-4bad-b7a1-a45bcdbc49b8&pf_rd_p=bbac26bb-3f7b-44dd-a8a5-c10fcfb1ed60&pf_rd_r=NSVTMZP7XDPWSGFW0VPQ&pd_rd_wg=rDzwP&pd_rd_r=23b42ddb-2882-4bb7-99d5-8fc9b6ff34ed&pd_rd_i=B07Z83MF5W&th=1).
-  * [MAX3232 Transceiver](https://www.amazon.de/Adafruit-UART-zu-RS-232-Pegelwandler-MAX3232E-5987/dp/B0DXVYQ6CZ/ref=sr_1_3?__mk_de_DE=%C3%85M%C3%85%C5%BD%C3%95%C3%91&crid=M95NGDYAWDCD&dib=eyJ2IjoiMSJ9.ImSP7U9MuW_Mzo3jNmdsGGRtMNQV8sU2QM7wwLa9vySFDyNBPMxljJRjLHLVYE4PZGGg_k0H8RQ5XC5Ue-czZSCvmqiH65OlVfAKBHx-8dYk95hSPfOhNuv9t60hk3Oi32puWgIGiuTbibebR2P_V1d5rntkv5AaK_4lA5LxFk4.jbAGmd8fL-RcicNDuPq8tzmL_gcDsRB1BI2lfwbVZ6s&dib_tag=se&keywords=max+3232&qid=1777919116&s=industrial&sprefix=max3232%2Cindustrial%2C114&sr=1-3).
-  * US2000B: Cable with RJ11 connector (some RJ11 cables have only two wires, make sure to buy one that has all four wires present).
-  * US2000C or US5000: Cable with RJ45 connector (see below for more details).
-  * Capacitors C1: 10uF, C2: 0.1uF (this is not strictly required, but recommended as Wemos D1 can have large current spikes).
-
-![Schematics](Schemetics.png)
-
-# US2000C/US3000C/US5000 notes:
-This battery uses RJ45 cable instead of RJ10. Schematics is the same only plug differs:
-  * RJ45 Pin 3 (white-green) = R1IN
-  * RJ45 Pin 6 (green)       = T1OUT
-  * RJ45 Pin 8 (brown)       = GND
-![image](https://user-images.githubusercontent.com/19826327/146428324-29e3f9bf-6cc3-415c-9d60-fa5ee3d65613.png)
-
-
-# How to get going:
-  * Get ESP32
-  * Install arduino IDE and ESP32 libraries as
-  * Open [PylontechMonitoring.ino](PylontechMonitoring.ino) in arduino IDE
-  * Make sure to copy content of [libraries subdirectory](libraries) to [libraries of your Arduino IDE](https://forum.arduino.cc/index.php?topic=88380.0).
-  * Connect ESP32 to the MAX3232 transreceiver
-  * Connect transreceiver to RJ10/RJ45 as descibed in the schematics (all three lines need to be connected)
-  * Connect RJ10/RJ45 to the serial port of the Pylontech US2000 battery. If you have multiple batteries - connect to the master one.
-  * Connect ESP32 to the power via USB
-  * Connect to WIFI pylontech-xxxx
-  * browse "192.168.4.1/filemanager
-  * upload all files from folder /data to the ESP (Website) 
-  * broswe "http://192.168.4.1"
-  * klick connection scan for WIFI and connect to your WIFI 
-  * 30s after connecting to your WIFI the AP turns of (After refresh you can see the IP-Adress of the ESP) 
-  * have fun to Discover my Projekt 
-  * latest 60s after start all site are avaiable 
-  
-  * For use MQTT connect to your server 
-  * "MQTT" = this value will be publish "Send" = Autodiscoverer for Homeassistant 
-  
-  * Battery Console: send commands directly to the Battery 
-  
-
-# Pylontech Battery Monitor
-
-This project uses an **ESP8266** to read data from a Pylontech battery (via Serial) and publish it to an MQTT broker.  
-It also supports an internal web interface and (optionally) OTA updates.
+ESP32-S3-basierte Firmware zur Überwachung von Pylontech-Batterien (US2000B, US2000C, US3000C, US5000) über WLAN oder Ethernet.  
+Forked von [irekzielinski/Pylontech-Battery-Monitoring](https://github.com/irekzielinski/Pylontech-Battery-Monitoring), [@hidaba](https://github.com/hidaba) und [@HeldvomForst](https://github.com/HeldvomForst/PylontechMonitoring_ESP32) grundlegend für ESP32-S3 überarbeitet.
 
 ---
 
-## Configuration Parameters
+## Inhaltsverzeichnis
 
-go to the ESP Website
+1. [Features](#features)
+2. [Hardware](#hardware)
+3. [Verkabelung](#verkabelung)
+4. [Erstinstallation](#erstinstallation)
+5. [Web-Interface](#web-interface)
+6. [MQTT](#mqtt)
+7. [OTA-Update](#ota-update)
+8. [Boot-Taster Funktionen](#boot-taster-funktionen)
+9. [Konfigurationsparameter](#konfigurationsparameter)
+10. [Architektur](#architektur)
+11. [Changelog](#changelog)
 
-Press boot button: 
-  * 1x short enable WIFI-AP
-  * 5x short Reset WIFI 
-  * 15s long "factory reset" 
+---
+
+## Features
+
+- **Dual-Core-Architektur** – UART-Kommunikation auf Core 0, Web/MQTT/WiFi auf Core 1
+- **Web-Interface** – Dashboard, Zellspannungen, Statistiken, Health-Übersicht, Konsole, Log
+- **MQTT-Support** – Publisht Batteriestatus an beliebigen Broker; Home-Assistant Autodiscovery
+- **OTA-Firmware-Update** – direkt über das Web-Interface (keine USB-Verbindung nötig)
+- **Ethernet-Support** – W5500 SPI (z. B. Waveshare ESP32-S3-ETH)
+- **DHCP oder statische IP** – für WiFi und Ethernet unabhängig konfigurierbar
+- **Display-Unterstützung** – ST7735 TFT (optional)
+- **NTP-Zeitsynchronisation** – mit konfigurierbarer Zeitzone und DST
+- **Health-Monitoring** – Zellspannungsdifferenz-Überwachung mit Warn-/Fehlerschwellen
+- **Einstellungen-Backup/Restore** – JSON-Export und -Import über Web-Interface
+- **Factory Reset** – per Taster oder Web-Interface
+- **Robuste INFO/STAT/BAT-Settings** – NVS-Cache + Last-Good-Fallback gegen leere Seiten nach Navigation
+- **Stabile Scheduler-Queue** – Mutex, Deduplizierung und Queue-Limit zur Vermeidung von Refresh-Stuermen
+
+---
+
+## Hardware
+
+| Bauteil | Beschreibung |
+|---|---|
+| ESP32-S3 WROOM | Mikrocontroller (4 MB Flash, 8 MB PSRAM) |
+| MAX3232 Transceiver | RS-232 ↔ UART-Pegelwandler |
+| Kondensator C1 | 10 µF (empfohlen, stabilisiert Stromversorgung) |
+| Kondensator C2 | 0,1 µF (empfohlen) |
+| Kabel US2000B | RJ11 (4-adrig!) |
+| Kabel US2000C / US3000C / US5000 | RJ45 |
+
+---
+
+## Verkabelung
+
+### Allgemein (MAX3232 ↔ ESP32-S3)
+
+```
+MAX3232 T1IN  → ESP32 TX  (GPIO 17)
+MAX3232 R1OUT → ESP32 RX  (GPIO 16)
+MAX3232 GND   → GND
+MAX3232 VCC   → 3.3 V
+```
+
+### Pylontech US2000B – RJ11
+
+```
+RJ11 Pin 2 → MAX3232 R1IN
+RJ11 Pin 3 → MAX3232 T1OUT
+RJ11 Pin 4 → GND
+```
+
+### Pylontech US2000C / US3000C / US5000 – RJ45
+
+```
+RJ45 Pin 3 (weiß-grün) → MAX3232 R1IN
+RJ45 Pin 6 (grün)      → MAX3232 T1OUT
+RJ45 Pin 8 (braun)     → GND
+```
+
+> Bei mehreren Batterien immer am **Master** anschließen.
+
+![Schaltplan](Schemetics.png)
+
+---
+
+## Erstinstallation
+
+### 1. Firmware kompilieren & flashen (einmalig per USB)
+
+Voraussetzung: [arduino-cli](https://arduino.github.io/arduino-cli/) installiert, ESP32-Core installiert.
+
+```bash
+# Partitionstabelle bereitstellen
+cp partitions/pylontech_ota_spiffs.csv partitions.csv
+
+# Kompilieren
+arduino-cli compile \
+  --fqbn "esp32:esp32:esp32s3:PartitionScheme=custom,FlashSize=4M" \
+  --libraries libraries/ \
+  --output-dir build/ .
+
+# Flashen
+arduino-cli upload \
+  --fqbn "esp32:esp32:esp32s3:PartitionScheme=custom,FlashSize=4M" \
+  --port /dev/tty.usbmodem<XXXX> \
+  --input-dir build/ .
+
+# Alternativ: Flashen mit espserial-Skript (inkl. Vollmodus)
+# Standard: nur App (schnelles Update)
+./espserial.sh --port /dev/tty.usbmodem<XXXX>
+
+# Vollflash: Bootloader + Partitionstabelle + Boot-App + Firmware
+./espserial.sh --port /dev/tty.usbmodem<XXXX> --full
+
+# Optional mit vorherigem Komplett-Loeschen
+./espserial.sh --port /dev/tty.usbmodem<XXXX> --full --erase
+
+# Komfort: Vollflash inkl. automatischer SPIFFS-Erzeugung aus data/
+./espserial.sh --port /dev/tty.usbmodem<XXXX> --full-with-spiffs
+
+# OTA-Paket aus aktueller App-Binary erzeugen (kein USB-Flash)
+./espserial.sh --ota-package
+
+# OTA-Paket erzeugen und direkt per otaup an ESP senden
+./espserial.sh --ota-upload 192.168.8.64
+```
+
+Hinweis: Ein SPIFFS-Image kann optional im Vollmodus geflasht werden.
+
+```bash
+# SPIFFS-Image aus data/ erzeugen (Groesse aus partitions.csv: 0x9F0000)
+"$HOME"/Library/Arduino15/packages/esp32/tools/mkspiffs/0.2.3/mkspiffs \
+  -c data -b 4096 -p 256 -s 0x9F0000 build/spiffs.bin
+
+# Vollflash inkl. SPIFFS
+./espserial.sh --port /dev/tty.usbmodem<XXXX> --full --spiffs-image build/spiffs.bin
+```
+
+### 2. Web-Dateien hochladen
+
+1. ESP32 startet als WLAN-Hotspot `pylontech-XXXX`
+2. Im Browser `http://192.168.4.1/filemanager` öffnen
+3. Alle Dateien aus dem Ordner `data/` hochladen
+4. Browser auf `http://192.168.4.1` – Seite wird angezeigt
+
+### 3. WLAN einrichten
+
+1. Seite `Verbindung` → **Scan** → Netz auswählen → Passwort eingeben → Speichern
+2. Ca. 30 Sekunden warten – der AP deaktiviert sich automatisch
+3. Die neue IP-Adresse wird nach dem Neuverbinden im Dashboard angezeigt
+
+> Alle Seiten sind spätestens 60 Sekunden nach dem Boot erreichbar.
+
+---
+
+## Web-Interface
+
+| URL | Beschreibung |
+|---|---|
+| `/` | Dashboard (SOC, Spannung, Strom, Temperatur) |
+| `/celldata` | Zellspannungen aller Module |
+| `/health` | Health-Status (Zellspannungsdifferenzen) |
+| `/statistic` | Statistik-Daten |
+| `/log` | System-Log |
+| `/console` | Direktkonsole zur Batterie |
+| `/connect` | WLAN-, MQTT-, NTP-, IP-Einstellungen |
+| `/service` | OTA-Update, Neustart, Backup/Restore, Factory Reset |
+| `/filemanager` | SPIFFS Dateimanager |
+
+---
+
+## MQTT
+
+### Verbindung konfigurieren
+
+Im Web-Interface unter `Verbindung → MQTT Settings`:
+
+| Parameter | Standard |
+|---|---|
+| Server | `192.168.8.4` |
+| Port | `1883` |
+| Prefix | `Pylontech` |
+| Stack-Topic | `Stack` |
+
+### Topics
+
+```
+Pylontech/Stack/<Feld>          – Stack-Gesamtwerte (SOC, Strom, Spannung …)
+Pylontech/pwr/<Modul>/<Feld>   – Einzelmodule (PWR-Kommando)
+Pylontech/bat/<Modul>/Cell<N>  – Zellspannungen (BAT-Kommando)
+Pylontech/stat/<Modul>/<Feld>  – Statistik (STAT-Kommando)
+Pylontech/info/<Modul>/<Feld>  – INFO-Felder (z. B. Barcode, Softversion)
+```
+
+### Home Assistant Autodiscovery
+
+- **MQTT** (Checkbox) = Wert wird publiziert
+- **Send** (Checkbox) = Autodiscovery-Payload für Home Assistant wird gesendet
+
+---
+
+## OTA-Update
+
+> Funktioniert nur wenn die Partitionstabelle korrekt geflasht wurde (Erstinstallation per USB erforderlich).
+
+1. `http://<ESP-IP>/service` öffnen
+2. Datei `build/PylontechMonitoring.ino.bin` auswählen
+   _(nicht `merged.bin`, nicht `bootloader.bin`)_
+3. **Flashen** klicken – Fortschrittsbalken erscheint
+4. ESP startet automatisch neu
+
+**Dateinamen-Anforderung:** Die `.bin`-Datei muss das Wort `Pylontech` im Namen enthalten.
+
+### OTA-Datei per Skript vorbereiten
+
+```bash
+# Erzeugt build/PylontechMonitoring.ino.bin und build/PylontechMonitoring.ino.bin.sha256
+./espserial.sh --ota-package
+
+# Optional direkt senden (nutzt lokal installiertes otaup)
+./espserial.sh --ota-upload <ESP-IP>
+```
+
+---
+
+## Boot-Taster Funktionen
+
+| Tastendruck | Aktion |
+|---|---|
+| 1× kurz | WLAN-Accesspoint aktivieren |
+| 5× kurz | WLAN-Einstellungen zurücksetzen |
+| 15 s lang halten | Factory Reset (alle Einstellungen löschen) |
+
+---
+
+## Konfigurationsparameter
+
+Alle Einstellungen werden im NVS (Non-Volatile Storage) des ESP32 gespeichert und überleben Firmware-Updates.
+
+### System
+
+| Parameter | Standard | Beschreibung |
+|---|---|---|
+| `deviceName` | `PylontechMonitor` | Anzeigename |
+| `hostname` | `pylontech-XXXX` | mDNS-Hostname (aus MAC generiert) |
+| `firmwareVersion` | `1.2.6` | Aktuelle Firmware-Version |
+
+### WiFi / Netzwerk
+
+| Parameter | Beschreibung |
+|---|---|
+| SSID / Passwort | WLAN-Zugangsdaten |
+| Statische IP | Optional: IP, Subnetz, Gateway, DNS |
+| Ethernet (W5500) | MISO=12, MOSI=11, SCK=13, CS=14, RST=9, INT=10 |
+
+### MQTT
+
+| Parameter | Standard | Beschreibung |
+|---|---|---|
+| `mqtt.enabled` | `true` | MQTT aktivieren |
+| `mqtt.server` | `192.168.8.4` | Broker-Adresse |
+| `mqtt.port` | `1883` | Broker-Port |
+| `mqtt.prefix` | `Pylontech` | Topic-Präfix |
+| `mqtt.mode` | `active` | Sendemodus |
+
+### Batterie-Abfrageintervalle
+
+| Parameter | Standard | Beschreibung |
+|---|---|---|
+| `intervalPwr` | 60.000 ms | PWR-Abfrage (Spannung, Strom, SOC) |
+| `intervalBat` | 300.000 ms | BAT-Abfrage (Zellspannungen) |
+| `intervalStat` | 1.800.000 ms | STAT-Abfrage (Statistik) |
+| `intervalInfo` | 3.600.000 ms | INFO-Abfrage (Gerateinfos wie Barcode/Version) |
+
+### Health-Schwellwerte
+
+| Parameter | Standard | Beschreibung |
+|---|---|---|
+| `cellDiffWarn` | 10 mV | Zellspannungsdifferenz Warnung |
+| `cellDiffError` | 20 mV | Zellspannungsdifferenz Fehler |
+
+---
+
+## Architektur
+
+```
+ESP32-S3 (Dual Core)
+│
+├── Core 0 – Realtime Task
+│   └── UART ↔ Pylontech RS-232
+│       └── Frame-Parser (PWR / BAT / STAT / INFO)
+│           └── Double-Buffer (pwrA/B, batA/B, statA/B, infoA/B)
+│
+└── Core 1 – Non-Critical Task
+  ├── Scheduler (Kommando-Queue mit Mutex + Deduplizierung)
+    ├── MQTT (PubSubClient)
+    ├── Webserver (WebServer)
+  ├── API-Cache (NVS + Last-Good-Fallback)
+    ├── WiFiManager / EthManager
+    ├── SystemManager
+    └── Display (ST7735, alle 500 ms)
+```
+
+### Partitionstabelle (4 MB Flash)
+
+| Name | Typ | Offset | Größe |
+|---|---|---|---|
+| nvs | data/nvs | 0x9000 | 20 KB |
+| otadata | data/ota | 0xE000 | 8 KB |
+| app0 (OTA 0) | app | 0x10000 | 1792 KB |
+| app1 (OTA 1) | app | 0x1D0000 | 1792 KB |
+| spiffs | data/spiffs | 0x390000 | 448 KB |
+
+---
+
+## Changelog
+
+Siehe [CHANGELOG.md](CHANGELOG.md)

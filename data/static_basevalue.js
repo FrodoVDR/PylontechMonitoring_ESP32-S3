@@ -2,10 +2,23 @@ function sanitize(str){
     return str.replace(/[^A-Za-z0-9_]/g, "");
 }
 
+function renderCacheTs(elementId, ts) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (!ts) {
+        el.innerText = "Cache: kein Eintrag (UART-Abruf läuft)";
+        return;
+    }
+    const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    el.innerText = "Cache-Alter: " + secs + "s";
+}
+
 function pwrLoad() {
     fetch("/api/pwr/base")
         .then(r => r.json())
         .then(j => {
+
+            renderCacheTs("cache_ts_pwr", j.cacheTimestamp || 0);
 
             // Abschnitt 1
             document.getElementById("use_fahrenheit").checked = j.config.useFahrenheit;

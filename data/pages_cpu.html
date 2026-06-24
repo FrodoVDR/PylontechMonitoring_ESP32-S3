@@ -1,16 +1,22 @@
 <div class="content-block">
     <h2>CPU Monitor</h2>
+    <p>FreeRTOS Task-Übersicht &amp; Speicher (alle 3 s aktualisiert).</p>
 
-    <p>Live CPU-Auslastung des ESP32 (keine Historie, nur Browser-seitig).</p>
+    <h3>Speicher</h3>
+    <table class="table" style="max-width:400px">
+        <tr><td>Heap frei</td><td><b id="heapFree">…</b></td></tr>
+        <tr><td>Heap min. (seit Boot)</td><td><b id="heapMin">…</b></td></tr>
+        <tr><td>PSRAM frei</td><td><b id="heapPsram">…</b></td></tr>
+        <tr><td>PSRAM gesamt</td><td><b id="heapPsramTotal">…</b></td></tr>
+    </table>
 
+    <h3>Tasks</h3>
     <table id="cpuTable" class="table">
         <thead>
-            <tr><th>Task</th><th>Time</th><th>Percent</th></tr>
+            <tr><th>Task</th><th>Status</th><th>Prio</th><th>Stack frei (Words)</th></tr>
         </thead>
         <tbody></tbody>
     </table>
-
-    <canvas id="cpuChart" width="400" height="150"></canvas>
 </div>
 
-<script src="/static/static_cpu.js"></script>
+<script src="/static_cpu.js"></script>
