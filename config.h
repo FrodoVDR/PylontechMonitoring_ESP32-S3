@@ -373,11 +373,11 @@ public:
     // to prevent double-starting ArduinoOTA
     bool otaStarted = false;
 
-    String ntpServer = "ptbtime1.ptb.de";
+    String ntpServer = "pool.ntp.org";
     bool manual_mode = false;
     bool manual_dst = false;
     bool use_gateway_ntp = false;
-    bool manual_ntp = true;
+    bool manual_ntp = false;
     String manual_date = "";
     String manual_time = "";
 
