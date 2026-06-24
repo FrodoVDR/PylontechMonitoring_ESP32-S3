@@ -86,6 +86,19 @@ static int normalizeSocPercent(const String& raw) {
     return (int)(v + 0.5f);
 }
 
+// Returns true only when the raw cell holds a usable numeric SOC/Coulomb value.
+// Empty cells or placeholders like "-" / "N/A" return false, so incomplete
+// module rows can be rejected instead of contributing a bogus 0 to the average.
+static bool socValueIsValid(const String& raw) {
+    String n = extractLeadingNumber(raw);
+    n.trim();
+    if (n.length() == 0) return false;
+    const char* s = n.c_str();
+    char* endPtr = nullptr;
+    strtod(s, &endPtr);
+    return (endPtr != s && endPtr != nullptr);
+}
+
 // ---------------------------------------------------------
 // Helper: split by whitespace
 // ---------------------------------------------------------
@@ -278,6 +291,7 @@ static ParseResult parsePwrFrameStackMode(const String& raw,
         mod.present = true;
         mod.hub = 0;
         mod.stack = 0;
+        bool socValid = false;
 
         mod.fields.reserve(header.size());
         for (size_t c = 0; c < header.size(); c++) {
@@ -299,12 +313,14 @@ static ParseResult parsePwrFrameStackMode(const String& raw,
                 mod.temperature = value.toInt();
             }
             else if (col == "Coulomb") {
+                socValid = socValueIsValid(value);
                 String v = extractLeadingNumber(value);
                 mod.fields[col] = v;
                 // Coulomb is used as SOC source on some firmware variants.
                 mod.soc = normalizeSocPercent(v);
             }
             else if (col == "SOC") {
+                socValid = socValueIsValid(value);
                 mod.soc = normalizeSocPercent(value);
                 mod.fields[col] = String(mod.soc);
             }
@@ -316,6 +332,18 @@ static ParseResult parsePwrFrameStackMode(const String& raw,
 
         if (!plausible) {
             Log(LOG_WARN, "PWR parser (STACK): skipping implausible module line " + String(i));
+            continue;
+        }
+
+        // Coulomb (SOC source) must be present and numeric. A module without a
+        // valid Coulomb value is an incomplete report: it would skew the stack
+        // SOC average and be rejected downstream (the MQTT/Node-RED validator
+        // requires Coulomb). Skip it so every published module carries Coulomb;
+        // the high-water module count + SOC gate keep values stable meanwhile.
+        bool hasSocColumn = mod.fields.count("Coulomb") || mod.fields.count("SOC");
+        if (hasSocColumn && !socValid) {
+            Log(LOG_WARN, "PWR parser (STACK): skipping module " + String(mod.index) +
+                " (missing/invalid Coulomb)");
             continue;
         }
 
@@ -593,6 +621,7 @@ static ParseResult parsePwrFrameHubMode(const String& raw,
         mod.hub     = hubID;
         mod.stack   = stackID;
         mod.index   = moduleID;
+        bool socValid = false;
 
         mod.fields.reserve(header.size());
         for (size_t c = 0; c < header.size(); c++) {
@@ -611,12 +640,14 @@ static ParseResult parsePwrFrameHubMode(const String& raw,
                 mod.temperature = value.toInt();
             }
             else if (col == "Coulomb") {
+                socValid = socValueIsValid(value);
                 String v = extractLeadingNumber(value);
                 mod.fields[col] = v;
                 // Coulomb is used as SOC source on some firmware variants.
                 mod.soc = normalizeSocPercent(v);
             }
             else if (col == "SOC") {
+                socValid = socValueIsValid(value);
                 mod.soc = normalizeSocPercent(value);
                 mod.fields[col] = String(mod.soc);
             }
@@ -629,6 +660,16 @@ static ParseResult parsePwrFrameHubMode(const String& raw,
 
         if (!plausible) {
             Log(LOG_WARN, "PWR parser (HUB): skipping implausible module line " + String(i));
+            continue;
+        }
+
+        // Coulomb (SOC source) must be present and numeric. Skip incomplete
+        // module rows so the per-stack SOC average stays correct and every
+        // published module carries Coulomb (else the MQTT validator rejects it).
+        bool hasSocColumn = mod.fields.count("Coulomb") || mod.fields.count("SOC");
+        if (hasSocColumn && !socValid) {
+            Log(LOG_WARN, "PWR parser (HUB): skipping module " + String(mod.index) +
+                " (missing/invalid Coulomb)");
             continue;
         }
 
