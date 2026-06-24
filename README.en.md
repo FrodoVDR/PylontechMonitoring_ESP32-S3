@@ -45,7 +45,8 @@ Forked from [irekzielinski/Pylontech-Battery-Monitoring](https://github.com/irek
 
 | Component | Description |
 |---|---|
-| ESP32-S3 WROOM | Microcontroller (4 MB Flash, 8 MB PSRAM) |
+| Waveshare ESP32-S3 PoE ETH| Mikrocontroller (16 MB Flash, 8 MB PSRAM) - tested|
+| ESP32-S3 WROOM | Microcontroller (4 MB Flash, 8 MB PSRAM) - should work |
 | MAX3232 transceiver | RS-232 to UART level shifter |
 | Capacitor C1 | 10 uF (recommended, power stabilization) |
 | Capacitor C2 | 0.1 uF (recommended) |
