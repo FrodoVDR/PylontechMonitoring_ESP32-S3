@@ -89,13 +89,13 @@ struct MqttConfig {
     String user = "";
     String pass = "";
 
-    String prefix     = "Pylontech";
-    String topicStack = "Stack";
+    String prefix     = "pylontech";
+    String topicStack = "stack";
     String topicPwr   = "pwr";
     String topicBat   = "bat";
     String topicStat  = "stat";
     String topicInfo  = "info";
-    String cellPrefix = "Cell";   // NEW: configurable cell prefix
+    String cellPrefix = "cell";   // NEW: configurable cell prefix
 
     String mode = "active";
 };
