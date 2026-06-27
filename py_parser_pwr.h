@@ -31,4 +31,3 @@ struct ParsedHubData {
 };
 
 extern ParsedHubData lastParsedHub;
-

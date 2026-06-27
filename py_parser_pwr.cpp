@@ -215,10 +215,48 @@ static bool splitFrameLinesAndHeader(const String& rawFrame,
         return false;
     }
 
-    header = splitWS(lines[0]);
+    // Find the header line robustly. Asynchronous console/log output can be
+    // injected at the top of a frame; blindly using the first line as the
+    // header would misalign every following column and corrupt all module
+    // data. Pick the first line that looks like the real table header (it
+    // contains the literal "Volt" column plus a row-id column). Data rows only
+    // carry numbers, so this never matches a data line.
+    size_t headerLine = 0;
+    bool   headerFound = false;
+    for (size_t i = 0; i < lines.size(); i++) {
+        std::vector<String> cand = splitWS(lines[i]);
+        if (cand.size() < 3) continue;
+
+        bool hasVolt = false;
+        bool hasId   = false;
+        for (const auto& tok : cand) {
+            if (tok == "Volt") hasVolt = true;
+            if (tok == "Power" || tok == "Battery" || tok == "Module") hasId = true;
+        }
+        if (hasVolt && hasId) {
+            headerLine  = i;
+            header      = cand;
+            headerFound = true;
+            break;
+        }
+    }
+
+    if (!headerFound) {
+        // Fallback to the original behaviour (first line is the header).
+        header = splitWS(lines[0]);
+    }
+
     if (header.size() < 3) {
         Log(LOG_WARN, "PWR parser: header too small");
         return false;
+    }
+
+    // Drop any pre-header noise so the data rows start right after the header
+    // (callers iterate data from index 1).
+    if (headerFound && headerLine > 0) {
+        lines.erase(lines.begin(), lines.begin() + headerLine);
+        Log(LOG_WARN, "PWR parser: skipped " + String((uint32_t)headerLine) +
+            " pre-header line(s) before table header");
     }
 
     lastParserHeader = header;
@@ -476,10 +514,23 @@ static ParseResult parsePwrFrameStackMode(const String& raw,
             }
         }
 
-        if (cols.size() < header.size()) continue;
+        // All fields we consume (index, Volt, Curr, Tempr, Tlow/Thigh,
+        // Vlow/Vhigh, the .St states and Coulomb/SOC) sit BEFORE the Time
+        // column. Only require those leading columns to be present instead of
+        // the full header width: this recovers modules whose lines are merely
+        // truncated in the unused trailing columns (B.V.St / B.T.St / MOS.St
+        // ...), which previously dropped the whole module ("schlecht geparste
+        // Daten"). Columns after Time are never read for module data.
+        size_t stableCols = (timeIndex >= 0) ? (size_t)timeIndex : header.size();
+        if (cols.size() < stableCols) {
+            Log(LOG_WARN, "PWR parser (STACK): line " + String(i) +
+                " truncated in required columns (" + String((uint32_t)cols.size()) +
+                "/" + String((uint32_t)stableCols) + "), skipping");
+            continue;
+        }
 
         // Absent → end of list
-        if (baseIndex >= 0 && cols[baseIndex] == "Absent") {
+        if (baseIndex >= 0 && baseIndex < (int)cols.size() && cols[baseIndex] == "Absent") {
             Log(LOG_INFO, "PWR parser (STACK): Absent detected at line " + String(i));
             break;
         }
@@ -495,10 +546,12 @@ static ParseResult parsePwrFrameStackMode(const String& raw,
         mod.stack = 0;
         bool socValid = false;
 
+        static const String EMPTY_FIELD = "-";
         mod.fields.reserve(header.size());
         for (size_t c = 0; c < header.size(); c++) {
             const String& col = header[c];
-            const String& value = cols[c];
+            // Bounds-safe: missing (truncated) trailing columns read as "-".
+            const String& value = (c < cols.size()) ? cols[c] : EMPTY_FIELD;
 
             mod.fields[col] = value;
 
@@ -696,13 +749,26 @@ static ParseResult parsePwrFrameHubMode(const String& raw,
             }
         }
 
-        if (cols.size() < header.size()) continue;
+        // Require only the columns we actually consume (all before Time); this
+        // recovers modules whose trailing, unused columns are truncated instead
+        // of dropping the whole row.
+        size_t stableCols = (timeIndex >= 0) ? (size_t)timeIndex : header.size();
+        if (cols.size() < stableCols) {
+            Log(LOG_WARN, "PWR parser (HUB): line " + String(i) +
+                " truncated in required columns (" + String((uint32_t)cols.size()) +
+                "/" + String((uint32_t)stableCols) + "), skipping");
+            continue;
+        }
+        // Stack/Module columns must be within range to read the row identity.
+        if (colStack >= (int)cols.size() || colModule >= (int)cols.size()) continue;
+        if (colAddress >= (int)cols.size()) { /* hubID falls back to 1 below */ }
 
         if (lastParserValues.empty()) {
             lastParserValues = cols;
         }
 
-        int hubID    = (colAddress >= 0) ? cols[colAddress].toInt() : 1;
+        int hubID    = (colAddress >= 0 && colAddress < (int)cols.size())
+                           ? cols[colAddress].toInt() : 1;
         int stackID  = cols[colStack].toInt();
         int moduleID = cols[colModule].toInt();
 
@@ -713,10 +779,12 @@ static ParseResult parsePwrFrameHubMode(const String& raw,
         mod.index   = moduleID;
         bool socValid = false;
 
+        static const String EMPTY_FIELD = "-";
         mod.fields.reserve(header.size());
         for (size_t c = 0; c < header.size(); c++) {
             const String& col   = header[c];
-            const String& value = cols[c];
+            // Bounds-safe: missing (truncated) trailing columns read as "-".
+            const String& value = (c < cols.size()) ? cols[c] : EMPTY_FIELD;
 
             mod.fields[col] = value;
 
