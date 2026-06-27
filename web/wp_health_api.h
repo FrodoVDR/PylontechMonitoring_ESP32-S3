@@ -27,50 +27,59 @@ inline void registerHealthAPI() {
     // GET /api/health
     // ---------------------------------------------------------
     apiGet("/api/health", []() {
-        HealthStatus healthSnap;
-        if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-            healthSnap = health;
-            xSemaphoreGive(g_healthMutex);
-        } else {
-            healthSnap = health;
-        }
-
+        // Build the response straight from the shared health state into a
+        // PSRAM-backed JSON document while holding the mutex. This avoids a
+        // full deep copy of HealthStatus on the internal heap and, crucially,
+        // never reads `health` without the lock (the parser task may be
+        // rewriting its vectors/strings concurrently -> use-after-free/crash).
         HealthSpiRamJsonDocument doc(8192);
 
-        // MODULES
-        JsonArray mods = doc.createNestedArray("modules");
-        for (auto &m : healthSnap.modules) {
-            JsonObject o = mods.createNestedObject();
-            o["index"]    = m.index;
-            o["status"]   = m.status;
-            o["tempMax"]  = m.tempMax;
-            o["cellMin"]  = m.cellMin;
-            o["cellMax"]  = m.cellMax;
-            o["cellDiff"] = m.cellDiff;
+        bool haveData = false;
+        if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(300)) == pdTRUE) {
+
+            // MODULES
+            JsonArray mods = doc.createNestedArray("modules");
+            for (auto &m : health.modules) {
+                JsonObject o = mods.createNestedObject();
+                o["index"]    = m.index;
+                o["status"]   = m.status;
+                o["tempMax"]  = m.tempMax;
+                o["cellMin"]  = m.cellMin;
+                o["cellMax"]  = m.cellMax;
+                o["cellDiff"] = m.cellDiff;
+            }
+
+            // STACK
+            JsonObject st = doc.createNestedObject("stack");
+            st["cellMin"]  = health.stackCellMin;
+            st["cellMax"]  = health.stackCellMax;
+            st["cellDiff"] = health.stackCellDiff;
+
+            // LIST HELPERS
+            auto addList = [&](JsonArray arr, const std::vector<int> &v) {
+                for (int x : v) arr.add(x);
+            };
+
+            addList(doc.createNestedArray("ok"),           health.okModules);
+            addList(doc.createNestedArray("warn"),         health.warnModules);
+            addList(doc.createNestedArray("error"),        health.errorModules);
+            addList(doc.createNestedArray("warnHistory"),  health.warnHistory);
+            addList(doc.createNestedArray("errorHistory"), health.errorHistory);
+
+            // STRONGEST + COLOR
+            doc["strongest"] = health.strongestMessage;
+            doc["color"]     = health.color;
+
+            xSemaphoreGive(g_healthMutex);
+            haveData = true;
         }
 
-        // STACK
-        JsonObject st = doc.createNestedObject("stack");
-        st["cellMin"]  = healthSnap.stackCellMin;
-        st["cellMax"]  = healthSnap.stackCellMax;
-        st["cellDiff"] = healthSnap.stackCellDiff;
+        if (!haveData) {
+            // Could not acquire the lock in time; do not race the parser task.
+            return apiError(503, F("Health busy"));
+        }
 
-        // LIST HELPERS
-        auto addList = [&](JsonArray arr, const std::vector<int> &v) {
-            for (int x : v) arr.add(x);
-        };
-
-        addList(doc.createNestedArray("ok"),           healthSnap.okModules);
-        addList(doc.createNestedArray("warn"),         healthSnap.warnModules);
-        addList(doc.createNestedArray("error"),        healthSnap.errorModules);
-        addList(doc.createNestedArray("warnHistory"),  healthSnap.warnHistory);
-        addList(doc.createNestedArray("errorHistory"), healthSnap.errorHistory);
-
-        // STRONGEST + COLOR
-        doc["strongest"] = healthSnap.strongestMessage;
-        doc["color"]     = healthSnap.color;
-
-        // NEW: CONFIG VALUES
+        // CONFIG VALUES (not guarded by the health mutex)
         JsonObject cfg = doc.createNestedObject("config");
         cfg["cellDiffWarn"]  = config.battery.cellDiffWarn;
         cfg["cellDiffError"] = config.battery.cellDiffError;

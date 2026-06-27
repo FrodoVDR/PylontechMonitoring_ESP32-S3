@@ -3,13 +3,24 @@
 // ---------------------------------------------------------
 if (typeof window.healthAutoReload === "undefined") window.healthAutoReload = true;
 
+// Verhindert überlappende Requests, falls eine Antwort langsam ist.
+if (typeof window.healthLoading === "undefined") window.healthLoading = false;
+
 
 // ---------------------------------------------------------
 // Hauptfunktion: Health laden
 // ---------------------------------------------------------
 function loadHealth() {
+    // Keine parallelen Requests stapeln.
+    if (window.healthLoading) return;
+    window.healthLoading = true;
+
     fetch("/api/health")
-        .then(r => r.json())
+        .then(r => {
+            // 503 = Backend gerade beschäftigt -> diesen Zyklus überspringen.
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        })
         .then(data => {
 
             // Header
@@ -60,6 +71,12 @@ function loadHealth() {
                 document.getElementById("cellDiffError").value =
                     data.config.cellDiffError.toFixed(3);
             }
+        })
+        .catch(() => {
+            // Netzwerk-/Busy-Fehler ignorieren; nächster Zyklus versucht es erneut.
+        })
+        .finally(() => {
+            window.healthLoading = false;
         });
 }
 
@@ -98,10 +115,13 @@ function saveHealthConfig() {
 
 
 // ---------------------------------------------------------
-// Auto‑Reload alle 2 Sekunden (nur wenn erlaubt)
+// Auto‑Reload alle 2 Sekunden (nur wenn erlaubt und Tab sichtbar)
 // ---------------------------------------------------------
 setInterval(() => {
-    if (window.healthAutoReload) loadHealth();
+    if (!window.healthAutoReload) return;
+    // Im Hintergrund (Tab nicht sichtbar) nicht pollen -> entlastet das Gerät.
+    if (document.hidden) return;
+    loadHealth();
 }, 2000);
 
 
