@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <map>
 #include <cstdlib>
+#include <new>
+#include <esp_heap_caps.h>
 
 // UART instance
 extern PyUart py_uart;
@@ -225,6 +227,206 @@ static bool splitFrameLinesAndHeader(const String& rawFrame,
 }
 
 // ---------------------------------------------------------
+// HEALTH EVALUATION (shared by STACK and HUB parsers)
+//
+// The health snapshot is built into a PSRAM-backed working copy first and is
+// only committed to the global `health` struct when:
+//   1) every detected module is present in this report (completeness), and
+//   2) every present module carries verified, plausible cell data (validity).
+// If the report is incomplete or any module fails verification, the previous
+// (last good) health state is kept untouched. This prevents transient PWR
+// undercounts (e.g. 6/8) from dropping modules in the UI and avoids spurious
+// warnings from partially parsed / misaligned frames.
+// ---------------------------------------------------------
+
+// Read a field from a const BatteryModule without mutating the map.
+static String pwrFieldOf(const BatteryModule& m, const char* key) {
+    FieldMap::const_iterator it = m.fields.find(String(key));
+    if (it == m.fields.end()) return String();
+    return it->second;
+}
+
+// Classify a Pylontech status string. Only recognized alarm states count as a
+// fault; unknown or operational states (Normal, Charge, Dischg, Idle, ...) are
+// treated as healthy to avoid unfounded warnings.
+static bool pwrStatusIsAlarm(const String& sIn) {
+    String s = sIn;
+    s.trim();
+    if (s.length() == 0) return false;
+    if (s == "-") return false;
+
+    String l = s;
+    l.toLowerCase();
+
+    // Known healthy / operational states.
+    if (l == "normal" || l == "ok" || l == "idle" || l == "stable" ||
+        l == "charge" || l == "chg" || l == "dischg" || l == "discharge" ||
+        l == "charging" || l == "discharging" || l == "standby" ||
+        l == "sleep" || l == "float" || l == "balance" || l == "absent")
+        return false;
+
+    // Known alarm tokens.
+    if (l.indexOf("alarm")   >= 0 || l.indexOf("fault") >= 0 ||
+        l.indexOf("err")     >= 0 || l.indexOf("protect") >= 0 ||
+        l.indexOf("over")    >= 0 || l.indexOf("under") >= 0 ||
+        l.indexOf("high")    >= 0 || l.indexOf("low")   >= 0 ||
+        l == "ov" || l == "uv" || l == "ot" || l == "ut")
+        return true;
+
+    // Unrecognized state: treat as healthy to avoid false positives.
+    return false;
+}
+
+// Allocate a HealthStatus working copy, preferring PSRAM to relieve the heap.
+static HealthStatus* pwrAllocHealthWork() {
+    void* p = heap_caps_malloc(sizeof(HealthStatus), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = heap_caps_malloc(sizeof(HealthStatus), MALLOC_CAP_8BIT);
+    if (!p) return nullptr;
+    return new (p) HealthStatus();
+}
+
+static void pwrFreeHealthWork(HealthStatus* h) {
+    if (!h) return;
+    h->~HealthStatus();
+    heap_caps_free(h);
+}
+
+static void updateHealthFromModules(const std::vector<BatteryModule>& modulesOut,
+                                    int detected, const char* tag)
+{
+    HealthStatus* work = pwrAllocHealthWork();
+    if (!work) {
+        Log(LOG_WARN, String("Health (") + tag +
+            "): no memory for work copy, keeping previous health");
+        return;
+    }
+
+    int  validCount     = 0;
+    bool dataConsistent = true;
+
+    for (const auto& m : modulesOut) {
+        if (!m.present) continue;
+
+        ModuleHealth mh;
+        mh.index = m.index;
+
+        int t1 = m.temperature;
+        int t2 = pwrFieldOf(m, "Thigh").toInt();
+
+        if (t1 > 0) mh.tempMax = t1 / 1000.0f;
+        if (t2 > 0 && t2 > t1) mh.tempMax = t2 / 1000.0f;
+
+        String vlow  = pwrFieldOf(m, "Vlow");
+        String vhigh = pwrFieldOf(m, "Vhigh");
+
+        bool cellValid = false;
+        if (vlow.length() && vhigh.length() && vlow != "-" && vhigh != "-") {
+            int low  = vlow.toInt();
+            int high = vhigh.toInt();
+
+            if (low > 1000 && low < 5000 && high > 1000 && high < 5000 && high >= low) {
+                mh.cellMin  = low / 1000.0f;
+                mh.cellMax  = high / 1000.0f;
+                mh.cellDiff = mh.cellMax - mh.cellMin;
+                cellValid   = true;
+
+                if (work->stackCellMin == 0 || mh.cellMin < work->stackCellMin)
+                    work->stackCellMin = mh.cellMin;
+                if (mh.cellMax > work->stackCellMax)
+                    work->stackCellMax = mh.cellMax;
+            }
+        }
+
+        // A module without verified cell data makes the whole report unreliable.
+        if (!cellValid)
+            dataConsistent = false;
+
+        bool modError = false;
+        bool modWarn  = false;
+
+        if (pwrStatusIsAlarm(pwrFieldOf(m, "SysAlarm.St"))) modError = true;
+
+        if (pwrStatusIsAlarm(pwrFieldOf(m, "Volt.St"))) modWarn = true;
+        if (pwrStatusIsAlarm(pwrFieldOf(m, "Curr.St"))) modWarn = true;
+        if (pwrStatusIsAlarm(pwrFieldOf(m, "Temp.St"))) modWarn = true;
+
+        if (cellValid && mh.cellDiff > config.battery.cellDiffWarn)  modWarn  = true;
+        if (cellValid && mh.cellDiff > config.battery.cellDiffError) modError = true;
+
+        if (modError) {
+            mh.status = "Fehler";
+            work->errorModules.push_back(m.index);
+        } else if (modWarn) {
+            mh.status = "Warnung";
+            work->warnModules.push_back(m.index);
+        } else {
+            mh.status = "OK";
+            work->okModules.push_back(m.index);
+        }
+
+        work->modules.push_back(mh);
+        validCount++;
+    }
+
+    work->stackCellDiff = work->stackCellMax - work->stackCellMin;
+
+    // Completeness + validity gate.
+    int expected = detected;
+    if (expected < 1) expected = 1;
+
+    if (validCount < expected || validCount == 0 || !dataConsistent) {
+        Log(LOG_WARN, String("Health (") + tag + "): incomplete/unverified report (" +
+            String(validCount) + "/" + String(expected) +
+            ", consistent=" + (dataConsistent ? "yes" : "no") +
+            ") -> keeping previous health");
+        pwrFreeHealthWork(work);
+        return;
+    }
+
+    if (!work->errorModules.empty()) {
+        work->color = "red";
+        work->strongestMessage = "Fehler in Modulen";
+    } else if (!work->warnModules.empty()) {
+        work->color = "yellow";
+        work->strongestMessage = "Warnung in Modulen";
+    } else {
+        work->color = "green";
+        work->strongestMessage = "OK";
+    }
+
+    // Commit the verified snapshot to the global health state.
+    if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        auto pushLimited = [&](std::vector<int>& list, int value) {
+            if (!list.empty() && list.back() == value) return;
+            list.push_back(value);
+            const size_t MAX_HISTORY = 50;
+            if (list.size() > MAX_HISTORY)
+                list.erase(list.begin());
+        };
+
+        health.modules      = work->modules;
+        health.okModules    = work->okModules;
+        health.warnModules  = work->warnModules;
+        health.errorModules = work->errorModules;
+
+        health.stackCellMin  = work->stackCellMin;
+        health.stackCellMax  = work->stackCellMax;
+        health.stackCellDiff = work->stackCellDiff;
+
+        health.color            = work->color;
+        health.strongestMessage = work->strongestMessage;
+
+        // History is only extended for verified snapshots.
+        for (int idx : work->warnModules)  pushLimited(health.warnHistory, idx);
+        for (int idx : work->errorModules) pushLimited(health.errorHistory, idx);
+
+        xSemaphoreGive(g_healthMutex);
+    }
+
+    pwrFreeHealthWork(work);
+}
+
+// ---------------------------------------------------------
 // STACK MODE PARSER (original behavior, minimal changes)
 // ---------------------------------------------------------
 static ParseResult parsePwrFrameStackMode(const String& raw,
@@ -429,120 +631,8 @@ static ParseResult parsePwrFrameStackMode(const String& raw,
     lastParsedStack   = stackOut;
     lastParsedModules = modulesOut;
 
-    // Health evaluation (unchanged, uses modulesOut)
-    if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        health.modules.clear();
-        health.okModules.clear();
-        health.warnModules.clear();
-        health.errorModules.clear();
-
-        health.stackCellMin = 0;
-        health.stackCellMax = 0;
-        health.stackCellDiff = 0;
-
-        auto pushLimited = [&](std::vector<int> &list, int value) {
-            if (!list.empty() && list.back() == value)
-                return;
-            list.push_back(value);
-            const size_t MAX_HISTORY = 50;
-            if (list.size() > MAX_HISTORY)
-                list.erase(list.begin());
-        };
-
-        for (auto &m : modulesOut) {
-            if (!m.present) continue;
-
-            ModuleHealth mh;
-            mh.index = m.index;
-
-            int t1 = m.temperature;
-            int t2 = m.fields["Thigh"].toInt();
-
-            if (t1 > 0) mh.tempMax = t1 / 1000.0f;
-            if (t2 > 0 && t2 > t1) mh.tempMax = t2 / 1000.0f;
-
-            String vlow  = m.fields["Vlow"];
-            String vhigh = m.fields["Vhigh"];
-
-            if (vlow != "-" && vhigh != "-") {
-                int low  = vlow.toInt();
-                int high = vhigh.toInt();
-
-                if (low > 1000 && low < 5000 && high > 1000 && high < 5000) {
-                    mh.cellMin = low / 1000.0f;
-                    mh.cellMax = high / 1000.0f;
-                    mh.cellDiff = mh.cellMax - mh.cellMin;
-
-                    if (health.stackCellMin == 0 || mh.cellMin < health.stackCellMin)
-                        health.stackCellMin = mh.cellMin;
-
-                    if (mh.cellMax > health.stackCellMax)
-                        health.stackCellMax = mh.cellMax;
-                }
-            }
-
-            auto bad = [&](const String &s) {
-                if (s.length() == 0) return false;
-                if (s == "-") return false;
-                if (s == "Normal" || s == "normal") return false;
-                return true;
-            };
-
-            bool modError = false;
-            bool modWarn  = false;
-
-            String volt = m.fields["Volt.St"];
-            String curr = m.fields["Curr.St"];
-            String temp = m.fields["Temp.St"];
-            String sys  = m.fields["SysAlarm.St"];
-
-            if (bad(sys)) modError = true;
-
-            if (bad(volt)) modWarn = true;
-            if (bad(curr)) modWarn = true;
-            if (bad(temp)) modWarn = true;
-
-            if (mh.cellDiff > config.battery.cellDiffWarn)
-                modWarn = true;
-
-            if (mh.cellDiff > config.battery.cellDiffError)
-                modError = true;
-
-            if (modError) {
-                mh.status = "Fehler";
-                health.errorModules.push_back(m.index);
-                pushLimited(health.errorHistory, m.index);
-            }
-            else if (modWarn) {
-                mh.status = "Warnung";
-                health.warnModules.push_back(m.index);
-                pushLimited(health.warnHistory, m.index);
-            }
-            else {
-                mh.status = "OK";
-                health.okModules.push_back(m.index);
-            }
-
-            health.modules.push_back(mh);
-        }
-
-        health.stackCellDiff = health.stackCellMax - health.stackCellMin;
-
-        if (!health.errorModules.empty()) {
-            health.color = "red";
-            health.strongestMessage = "Fehler in Modulen";
-        }
-        else if (!health.warnModules.empty()) {
-            health.color = "yellow";
-            health.strongestMessage = "Warnung in Modulen";
-        }
-        else {
-            health.color = "green";
-            health.strongestMessage = "OK";
-        }
-
-        xSemaphoreGive(g_healthMutex);
-    }
+    // Health evaluation: only commit when complete and verified (see helper).
+    updateHealthFromModules(modulesOut, detected, "STACK");
 
     Log(LOG_INFO, "PWR parser (STACK): parsed " + String(count) + " modules");
     return PARSE_OK;
@@ -779,119 +869,11 @@ static ParseResult parsePwrFrameHubMode(const String& raw,
     lastParsedStack   = stackOut;
     lastParsedModules = modulesOut;
 
-    // Health evaluation (reuse same logic, now across all modules)
-    if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        health.modules.clear();
-        health.okModules.clear();
-        health.warnModules.clear();
-        health.errorModules.clear();
-
-        health.stackCellMin = 0;
-        health.stackCellMax = 0;
-        health.stackCellDiff = 0;
-
-        auto pushLimited = [&](std::vector<int> &list, int value) {
-            if (!list.empty() && list.back() == value)
-                return;
-            list.push_back(value);
-            const size_t MAX_HISTORY = 50;
-            if (list.size() > MAX_HISTORY)
-                list.erase(list.begin());
-        };
-
-        for (auto &m : modulesOut) {
-            if (!m.present) continue;
-
-            ModuleHealth mh;
-            mh.index = m.index;
-
-            int t1 = m.temperature;
-            int t2 = m.fields["Thigh"].toInt();
-
-            if (t1 > 0) mh.tempMax = t1 / 1000.0f;
-            if (t2 > 0 && t2 > t1) mh.tempMax = t2 / 1000.0f;
-
-            String vlow  = m.fields["Vlow"];
-            String vhigh = m.fields["Vhigh"];
-
-            if (vlow != "-" && vhigh != "-") {
-                int low  = vlow.toInt();
-                int high = vhigh.toInt();
-
-                if (low > 1000 && low < 5000 && high > 1000 && high < 5000) {
-                    mh.cellMin = low / 1000.0f;
-                    mh.cellMax = high / 1000.0f;
-                    mh.cellDiff = mh.cellMax - mh.cellMin;
-
-                    if (health.stackCellMin == 0 || mh.cellMin < health.stackCellMin)
-                        health.stackCellMin = mh.cellMin;
-
-                    if (mh.cellMax > health.stackCellMax)
-                        health.stackCellMax = mh.cellMax;
-                }
-            }
-
-            auto bad = [&](const String &s) {
-                if (s.length() == 0) return false;
-                if (s == "-") return false;
-                if (s == "Normal" || s == "normal") return false;
-                return true;
-            };
-
-            bool modError = false;
-            bool modWarn  = false;
-
-            String volt = m.fields["Volt.St"];
-            String curr = m.fields["Curr.St"];
-            String temp = m.fields["Temp.St"];
-            String sys  = m.fields["SysAlarm.St"];
-
-            if (bad(sys)) modError = true;
-
-            if (bad(volt)) modWarn = true;
-            if (bad(curr)) modWarn = true;
-            if (bad(temp)) modWarn = true;
-
-            if (mh.cellDiff > config.battery.cellDiffWarn)
-                modWarn = true;
-
-            if (mh.cellDiff > config.battery.cellDiffError)
-                modError = true;
-
-            if (modError) {
-                mh.status = "Fehler";
-                health.errorModules.push_back(m.index);
-                pushLimited(health.errorHistory, m.index);
-            }
-            else if (modWarn) {
-                mh.status = "Warnung";
-                health.warnModules.push_back(m.index);
-                pushLimited(health.warnHistory, m.index);
-            }
-            else {
-                mh.status = "OK";
-                health.okModules.push_back(m.index);
-            }
-
-            health.modules.push_back(mh);
-        }
-
-        health.stackCellDiff = health.stackCellMax - health.stackCellMin;
-
-        if (!health.errorModules.empty()) {
-            health.color = "red";
-            health.strongestMessage = "Fehler in Modulen";
-        }
-        else if (!health.warnModules.empty()) {
-            health.color = "yellow";
-            health.strongestMessage = "Warnung in Modulen";
-        }
-        else {
-            health.color = "green";
-            health.strongestMessage = "OK";
-        }
-
-        xSemaphoreGive(g_healthMutex);
+    // Health evaluation: only commit when complete and verified (see helper).
+    {
+        int detected = totalModules;
+        if ((int)config.detectedModules > detected) detected = (int)config.detectedModules;
+        updateHealthFromModules(modulesOut, detected, "HUB");
     }
 
     Log(LOG_INFO, "PWR parser (HUB): parsed " + String(totalModules) + " modules");

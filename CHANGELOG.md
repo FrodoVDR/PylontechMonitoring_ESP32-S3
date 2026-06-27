@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 
 - other Homeautomation (Discoverer)
 
+## 2026-06-27
+- Health (`/api/health`) integrity: status snapshot is only committed when every detected module is present and its cell data is verified plausible; transient PWR undercounts (e.g. 6/8) no longer drop modules in the UI
+- Health evaluation now built in a PSRAM-backed working copy to relieve the heap
+- Health warnings: status fields are matched against known alarm states only, so normal operating states no longer trigger unfounded warnings; warn/error history is extended on verified snapshots only
+- Health thresholds: default warning raised to 38 mV and default error to 40 mV (`cellDiffWarn`/`cellDiffError`)
+
 ## 2026-06-24
 - 1.2.2
 - MQTT stack: SOC added to `pylontech/stack` payload

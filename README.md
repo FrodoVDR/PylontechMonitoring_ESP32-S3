@@ -281,8 +281,8 @@ Alle Einstellungen werden im NVS (Non-Volatile Storage) des ESP32 gespeichert un
 
 | Parameter | Standard | Beschreibung |
 |---|---|---|
-| `cellDiffWarn` | 10 mV | Zellspannungsdifferenz Warnung |
-| `cellDiffError` | 20 mV | Zellspannungsdifferenz Fehler |
+| `cellDiffWarn` | 38 mV | Zellspannungsdifferenz Warnung |
+| `cellDiffError` | 40 mV | Zellspannungsdifferenz Fehler |
 
 ---
 

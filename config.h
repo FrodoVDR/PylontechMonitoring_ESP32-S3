@@ -73,8 +73,8 @@ struct BatteryConfig {
     std::map<String, FieldConfig> fieldsStat;
     std::map<String, FieldConfig> fieldsInfo;
 
-    float cellDiffWarn = 0.010f;   // 10 mV Warnschwelle
-    float cellDiffError = 0.020f;  // 20 mV Fehlerschwelle
+    float cellDiffWarn = 0.038f;   // 38 mV Warnschwelle
+    float cellDiffError = 0.040f;  // 40 mV Fehlerschwelle
 
 };
 
@@ -89,13 +89,13 @@ struct MqttConfig {
     String user = "";
     String pass = "";
 
-    String prefix     = "pylontech";
-    String topicStack = "stack";
+    String prefix     = "Pylontech";
+    String topicStack = "Stack";
     String topicPwr   = "pwr";
     String topicBat   = "bat";
     String topicStat  = "stat";
     String topicInfo  = "info";
-    String cellPrefix = "cell";   // NEW: configurable cell prefix
+    String cellPrefix = "Cell";   // NEW: configurable cell prefix
 
     String mode = "active";
 };

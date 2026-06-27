@@ -241,8 +241,8 @@ All settings are stored in ESP32 NVS and survive firmware updates.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `cellDiffWarn` | 10 mV | Cell voltage delta warning |
-| `cellDiffError` | 20 mV | Cell voltage delta error |
+| `cellDiffWarn` | 38 mV | Cell voltage delta warning |
+| `cellDiffError` | 40 mV | Cell voltage delta error |
 
 ---
 
