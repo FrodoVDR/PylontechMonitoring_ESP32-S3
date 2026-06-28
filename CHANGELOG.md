@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - NVS config persistence fix: per-field settings (MQTT/Send) for STAT/BAT/INFO/PWR are no longer lost on firmware update; without the per-field MQTT flags STAT stopped publishing to MQTT entirely
 - `saveJsonChunked` now writes new chunks first and only removes stale chunks after a fully successful write; on a write failure existing data is left intact instead of being wiped
 - Empty in-memory field maps no longer overwrite stored NVS config (`saveStatFields`/`saveBatFields`/`saveInfoFields`/`savePwrFields` skip saving when empty)
+- Crash fix: sporadic PANIC in the web loop (`nrt:web_loop`) under low internal heap; web request handling is now deferred when free internal heap is critically low (mirrors the existing API cache heap-floor guard) instead of crashing in the network stack; added rate-limited low-heap warning for diagnostics
 - Note: STAT field selections already lost from NVS must be re-entered and saved once after updating
 
 ## 2026-06-27
