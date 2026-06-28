@@ -180,6 +180,14 @@ void AppConfig::saveJsonChunked(const char* ns, const char* prefix, const String
     Log(LOG_INFO, String("NVS-CHUNK: JSON length = ") + json.length());
 
     size_t len = json.length();
+
+    // Sicherheitsnetz: ein leerer Payload darf NIE bestehende Chunks loeschen.
+    // (Sonst wuerde z.B. ein versehentlich leeres fieldsStat die NVS-Daten vernichten.)
+    if (len == 0) {
+        Log(LOG_WARN, String("NVS-CHUNK: empty payload for prefix '") + prefix + "' - skipping save (existing data preserved)");
+        return;
+    }
+
     size_t neededChunks = (len + CHUNK_SIZE - 1) / CHUNK_SIZE;
     if (neededChunks > (size_t)MAX_JSON_CHUNKS) {
         Log(LOG_ERROR, String("NVS-CHUNK: payload too large for chunk limit, needed=") + neededChunks + ", max=" + MAX_JSON_CHUNKS);
@@ -189,25 +197,21 @@ void AppConfig::saveJsonChunked(const char* ns, const char* prefix, const String
     Preferences p;
     p.begin(ns, false);
 
-    // Alte Chunks entfernen
-    for (int i = 0; i < MAX_JSON_CHUNKS; i++) {
-        String key = String(prefix) + "_" + i;
-        if (p.isKey(key.c_str())) {
-            p.remove(key.c_str());
-        }
-    }
-
+    // WICHTIG: Neue Chunks ZUERST schreiben, alte NICHT vorab loeschen.
+    // Schlaegt ein Schreibvorgang fehl (z.B. NVS voll), bleiben die bestehenden
+    // Daten erhalten statt komplett geloescht zu werden.
     int index = 0;
     int written = 0;
+    bool writeOk = true;
 
-    while (index * CHUNK_SIZE < len) {
+    while ((size_t)index * CHUNK_SIZE < len) {
 
-        size_t start = index * CHUNK_SIZE;
+        size_t start = (size_t)index * CHUNK_SIZE;
         size_t end   = start + CHUNK_SIZE;
         if (end > len) end = len;
 
         String part;
-        part.reserve(CHUNK_SIZE);
+        part.reserve(end - start);
         for (size_t i = start; i < end; i++) {
             part += json[i];
         }
@@ -216,12 +220,28 @@ void AppConfig::saveJsonChunked(const char* ns, const char* prefix, const String
 
         bool ok = p.putString(key.c_str(), part);
         if (!ok) {
-            Log(LOG_ERROR, String("NVS-CHUNK: FAILED writing chunk #") + index);
+            Log(LOG_ERROR, String("NVS-CHUNK: FAILED writing chunk #") + index + " - aborting, existing data left untouched where possible");
+            writeOk = false;
             break;
         }
 
         index++;
         written++;
+    }
+
+    if (!writeOk) {
+        // Schreibfehler: ueberzaehlige alte Chunks NICHT entfernen.
+        // Der Load-Pfad validiert das JSON und behaelt bei Fehler die Vorkonfiguration.
+        p.end();
+        return;
+    }
+
+    // Erst nach erfolgreichem Schreiben aller Chunks ueberzaehlige alte Chunks entfernen.
+    for (int i = index; i < MAX_JSON_CHUNKS; i++) {
+        String key = String(prefix) + "_" + i;
+        if (p.isKey(key.c_str())) {
+            p.remove(key.c_str());
+        }
     }
 
     Log(LOG_INFO, String("NVS-CHUNK: Total chunks written = ") + written);
@@ -616,6 +636,11 @@ void AppConfig::savePwrConfig() {
 //  PWR FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::savePwrFields() {
+    if (battery.fieldsPwr.empty()) {
+        Log(LOG_WARN, "savePwrFields: fieldsPwr empty - skipping save to avoid wiping stored NVS config");
+        return;
+    }
+
     DynamicJsonDocument doc(DOC_CAP_PW_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 
@@ -794,6 +819,11 @@ void AppConfig::saveBatConfig() {
 //  BAT FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::saveBatFields() {
+    if (battery.fieldsBat.empty()) {
+        Log(LOG_WARN, "saveBatFields: fieldsBat empty - skipping save to avoid wiping stored NVS config");
+        return;
+    }
+
     DynamicJsonDocument doc(DOC_CAP_BAT_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 
@@ -1006,6 +1036,11 @@ void AppConfig::saveInfoConfig() {
 //  STAT FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::saveStatFields() {
+    if (battery.fieldsStat.empty()) {
+        Log(LOG_WARN, "saveStatFields: fieldsStat empty - skipping save to avoid wiping stored NVS config");
+        return;
+    }
+
     DynamicJsonDocument doc(DOC_CAP_STAT_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 
@@ -1121,6 +1156,11 @@ void AppConfig::loadStatFields() {
 //  INFO FIELDS (JSON + chunks)
 // ----------------------------------------------------
 void AppConfig::saveInfoFields() {
+    if (battery.fieldsInfo.empty()) {
+        Log(LOG_WARN, "saveInfoFields: fieldsInfo empty - skipping save to avoid wiping stored NVS config");
+        return;
+    }
+
     DynamicJsonDocument doc(DOC_CAP_INFO_FIELDS);
     JsonArray arr = doc.createNestedArray("fields");
 

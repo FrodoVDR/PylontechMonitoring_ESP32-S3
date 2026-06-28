@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 
 - other Homeautomation (Discoverer)
 
+## 2026-06-28
+- 1.2.3
+- NVS config persistence fix: per-field settings (MQTT/Send) for STAT/BAT/INFO/PWR are no longer lost on firmware update; without the per-field MQTT flags STAT stopped publishing to MQTT entirely
+- `saveJsonChunked` now writes new chunks first and only removes stale chunks after a fully successful write; on a write failure existing data is left intact instead of being wiped
+- Empty in-memory field maps no longer overwrite stored NVS config (`saveStatFields`/`saveBatFields`/`saveInfoFields`/`savePwrFields` skip saving when empty)
+- Note: STAT field selections already lost from NVS must be re-entered and saved once after updating
+
 ## 2026-06-27
 - Health (`/api/health`) integrity: status snapshot is only committed when every detected module is present and its cell data is verified plausible; transient PWR undercounts (e.g. 6/8) no longer drop modules in the UI
 - Health evaluation now built in a PSRAM-backed working copy to relieve the heap
