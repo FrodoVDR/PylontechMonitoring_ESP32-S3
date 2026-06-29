@@ -1,5 +1,7 @@
 #pragma once
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 class PyUart {
 public:
@@ -27,6 +29,12 @@ public:
     // their getters were never called and they churned internal DRAM heap.
     String getLastRawFrame() const { return lastRawFrame; }
 
+    // Console capture: full raw response of the most recently executed command,
+    // kept independent of frameReady/parser clearing so the web console never
+    // loses lines. seq is bumped on every captured response (valid or not).
+    uint32_t getConsoleSeq() const { return consoleSeq; }
+    void     getConsoleSnapshot(String& cmd, String& frame, uint32_t& seq);
+
 private:
     void switchBaud(int newRate);
     void wakeUpConsole();
@@ -46,4 +54,10 @@ private:
 
     String lastCommand;
     String lastRawFrame;
+
+    // Console capture buffer (full raw output, never trimmed by parser)
+    String   consoleFrame;
+    String   consoleCmd;
+    volatile uint32_t consoleSeq = 0;
+    SemaphoreHandle_t consoleMutex = nullptr;
 };

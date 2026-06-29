@@ -152,11 +152,13 @@ void PyUart::begin(int rx, int tx) {
     rxPin = rx;
     txPin = tx;
 
+    Serial2.setRxBufferSize(4096);  // long pwr/bat listings overflow the default 256B FIFO -> dropped rows
     Serial2.begin(115200, SERIAL_8N1, rxPin, txPin);
     delay(50);
 
     ensureRecvBuff();
     lastRawFrame.reserve(4096);  // stable capacity -> assignment reuses buffer, no realloc churn
+    if (!consoleMutex) consoleMutex = xSemaphoreCreateMutex();
 
     Log(LOG_INFO, "UART: begin() RX=" + String(rxPin) + " TX=" + String(txPin));
 
@@ -211,6 +213,7 @@ void PyUart::switchBaud(int newRate) {
     delay(20);
     Serial2.end();
     delay(20);
+    Serial2.setRxBufferSize(4096);
     Serial2.begin(newRate, SERIAL_8N1, rxPin, txPin);
     delay(20);
 }
@@ -398,6 +401,18 @@ bool PyUart::sendCommand(const char* cmd) {
     frameReady   = true;
     frameValid   = isValidFrame(lastRawFrame);
 
+    // Capture the full raw response for the web console *before* the parser
+    // can mark frameReady=false. This is independent of frameValid so even
+    // commands without a proper $$ frame (help, log, unit, …) are shown in
+    // full. Scheduled commands also pass through here, but the console
+    // frontend filters by command name + sequence, so polling stays robust.
+    if (consoleMutex && xSemaphoreTake(consoleMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        consoleFrame = lastRawFrame;
+        consoleCmd   = lastCommand;
+        consoleSeq++;
+        xSemaphoreGive(consoleMutex);
+    }
+
     if (!frameValid) {
         g_invalidCount++;
         Log(LOG_WARN, "UART: invalid frame received");
@@ -541,6 +556,18 @@ void PyUart::loop() {}
 String PyUart::getFrame() {
     frameReady = false;
     return lastRawFrame;
+}
+
+// ---------------------------------------------------------
+void PyUart::getConsoleSnapshot(String& cmd, String& frame, uint32_t& seq) {
+    if (consoleMutex && xSemaphoreTake(consoleMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        cmd   = consoleCmd;
+        frame = consoleFrame;
+        seq   = consoleSeq;
+        xSemaphoreGive(consoleMutex);
+    } else {
+        cmd = ""; frame = ""; seq = 0;
+    }
 }
 
 // ---------------------------------------------------------

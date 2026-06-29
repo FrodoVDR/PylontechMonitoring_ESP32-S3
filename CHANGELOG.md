@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 
 - other Homeautomation (Discoverer)
 
+## 2026-06-29
+- 1.2.5
+- Console output cleanup: carriage returns are stripped and remaining control characters escaped so the last lines of pwr/bat/stat no longer overwrite/mix in the textarea; tabs render as spaces to keep columns aligned
+- Console capture buffer is now mutex-protected; previously the realtimeTask could overwrite `consoleFrame` mid-read, corrupting the JSON response sent to the web console
+- UART RX buffer enlarged to 4096B (`Serial2.setRxBufferSize`): the default 256B FIFO overflowed during long pwr/bat listings causing dropped/truncated module rows; full frames are now received intact
+
+## 2026-06-28
+- 1.2.4
+- Battery-Console fix: console commands now return the full output reliably, no more missing lines or premature TIMEOUT; the complete raw response is captured into a dedicated buffer before the parser clears it (`consoleFrame`/`consoleSeq`), independent of frame validity so commands like `help`/`log` also display fully
+- `/api/lastframe` returns the captured response as JSON with a sequence/command tag; the web console now polls until a fresh frame for the issued command arrives (up to 18s) instead of one short 2s wait
+- Scheduled poll commands (pwr/bat/stat/info) keep priority; console commands run when the realtimeTask reaches them, so periodic monitoring is never starved
+
 ## 2026-06-28
 - 1.2.3
 - NVS config persistence fix: per-field settings (MQTT/Send) for STAT/BAT/INFO/PWR are no longer lost on firmware update; without the per-field MQTT flags STAT stopped publishing to MQTT entirely
