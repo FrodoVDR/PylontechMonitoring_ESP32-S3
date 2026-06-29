@@ -669,7 +669,14 @@ void PyMqtt::loop() {
     // ---------------------------------------------------------
     // DISCOVERY STATE MACHINE
     // ---------------------------------------------------------
-    handleDiscoveryStep(*pwr, *bat, *stat);
+    // Discovery spans multiple loop iterations (one phase per call). pwrSnap is
+    // only populated on iterations with fresh PWR data, so it is usually empty
+    // during the DISC_PWR/DISC_BAT phases -> module list empty -> nothing gets
+    // (re)published and the phase silently advances. Use the latest known PWR
+    // buffer for discovery so module presence/indices are always available
+    // (same lock-free latest-buffer pattern already used for bat/stat above).
+    PwrBuffer* pwrLatest = pwrUseA ? &pwrA : &pwrB;
+    handleDiscoveryStep(*pwrLatest, *bat, *stat);
 
     mqttClient.loop();
 }
@@ -1269,6 +1276,13 @@ void PyMqtt::addDiscoveryMeta(
     if (fc.factor == "date" || fc.unit == "timestamp")
         return;
 
+    // Text fields (no unit, e.g. balancer "N"/"Y", state "Normal"/"Charge")
+    // must NOT be declared as numeric measurement sensors: Home Assistant
+    // rejects the non-numeric state for a state_class=measurement entity and
+    // shows it as "Unknown". A unit-less field is treated as plain text.
+    if (fc.unit.length() == 0 || fc.factor == "text")
+        return;
+
     // Numeric fields
     int dec = decimalsForUnit(fc.unit);
     String devClass = deviceClassForUnit(fc.unit);
@@ -1591,10 +1605,14 @@ void PyMqtt::publishDiscoveryBatCell(int moduleIndex, int cellIndex) {
             "{{ value_json." + key + " }}";
 
         // Unit + device_class + precision
+        // Text fields (no unit, e.g. balancer "N"/"Y") must stay plain text:
+        // a state_class=measurement sensor with a non-numeric state shows up as
+        // "Unknown" in Home Assistant.
         bool isNumeric =
-            !(fc.factor == "text" ||
-              fc.factor == "date" ||
-              fc.unit   == "timestamp");
+            fc.unit.length() > 0 &&
+            fc.factor != "text" &&
+            fc.factor != "date" &&
+            fc.unit   != "timestamp";
 
         if (isNumeric) {
             if (precisionDiffersFromDefault(fc.unit))

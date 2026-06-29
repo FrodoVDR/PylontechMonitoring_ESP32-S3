@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 - other Homeautomation (Discoverer)
 
 ## 2026-06-29
+- 1.2.7
+- Discovery reliability fix: the discovery state machine received the per-iteration PWR snapshot, which is only populated when fresh PWR data arrived that exact loop. During the multi-iteration DISC_PWR/DISC_BAT phases the module list was usually empty, so module/cell discovery configs were often not (re)published and stale retained configs persisted. Discovery now uses the latest known PWR buffer, so re-running discovery actually overwrites the retained HA configs (e.g. after the BAL text-field fix).
+
+## 2026-06-29
+- 1.2.6
+- Home Assistant discovery fix for text fields: balancer (BAL "N"/"Y") and state fields were declared with `state_class: measurement`, so HA rejected the non-numeric value and showed "Unknown". Text/unit-less fields now publish as plain sensors (no state_class/device_class/unit) in BAT cell discovery and the shared `addDiscoveryMeta` (STAT/INFO/PWR). After update the auto-discovery re-runs (~65s after boot) and overwrites the retained configs.
+
+## 2026-06-29
 - 1.2.5
 - Console output cleanup: carriage returns are stripped and remaining control characters escaped so the last lines of pwr/bat/stat no longer overwrite/mix in the textarea; tabs render as spaces to keep columns aligned
 - Console capture buffer is now mutex-protected; previously the realtimeTask could overwrite `consoleFrame` mid-read, corrupting the JSON response sent to the web console

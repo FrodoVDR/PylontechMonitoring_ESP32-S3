@@ -388,7 +388,7 @@ public:
     MqttConfig mqtt;
     BatteryConfig battery;
 
-    String firmwareVersion = "1.2.5";
+    String firmwareVersion = "1.2.7";
     String currentTime     = "";
     String lastPwrUpdate   = "";
     uint16_t detectedModules = 0;
