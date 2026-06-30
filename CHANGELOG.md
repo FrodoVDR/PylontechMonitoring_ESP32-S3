@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 
 - other Homeautomation (Discoverer)
 
+## 2026-06-30
+- 1.2.8
+- Discovery heap-burst fix (renewed PANIC stage 130 / rt:wait_queue, heap_min ~8KB, core0 ~96%): once discovery actually worked again (1.2.7) the BAT phase published all 15 cells of a module - each with several fields - in one tight loop, a burst of dozens of JsonDocument+String allocations that spiked internal DRAM and crashed the device. BAT discovery now publishes ONE cell per loop iteration, spreading the allocations across iterations. Added a heap-floor guard in `handleDiscoveryStep`: if free internal DRAM is below `MQTT_MIN_FREE_HEAP` (15000), the step is deferred and retried next loop instead of allocating into the danger zone.
+
 ## 2026-06-29
 - 1.2.7
 - Discovery reliability fix: the discovery state machine received the per-iteration PWR snapshot, which is only populated when fresh PWR data arrived that exact loop. During the multi-iteration DISC_PWR/DISC_BAT phases the module list was usually empty, so module/cell discovery configs were often not (re)published and stale retained configs persisted. Discovery now uses the latest known PWR buffer, so re-running discovery actually overwrites the retained HA configs (e.g. after the BAL text-field fix).

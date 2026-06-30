@@ -696,6 +696,15 @@ void PyMqtt::handleDiscoveryStep(
 ) {
     if (!enabled || !mqttClient.connected()) return;
 
+    // Heap-floor guard: discovery builds many JsonDocuments + String payloads in
+    // a short window. Under critically low internal DRAM this is what pushed
+    // heap_min to ~8KB and caused PANIC stage 130 (rt:wait_queue). Defer the
+    // step (retry next loop) instead of allocating into the danger zone. Normal
+    // free internal heap is ~57KB, so this only trips during transient spikes.
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < MQTT_MIN_FREE_HEAP) {
+        return;
+    }
+
     auto stableModuleCount = [&]() -> size_t {
         size_t count = 0;
         if (pwr.stack.batteryCount > 0) count = (size_t)pwr.stack.batteryCount;
@@ -737,6 +746,7 @@ void PyMqtt::handleDiscoveryStep(
             if (discPwrIndex >= pwr.modules.size()) {
                 discoveryPhase = DISC_BAT;
                 discBatModule = 0;
+                discBatCell   = 0;
                 return;
             }
             if (!pwr.modules[discPwrIndex].present) {
@@ -755,12 +765,22 @@ void PyMqtt::handleDiscoveryStep(
             }
             if (!pwr.modules[discBatModule].present) {
                 discBatModule++;
+                discBatCell = 0;
                 return;
             }
-            for (size_t i = 0; i < bat.cells.size(); i++) {
-                publishDiscoveryBatCell(pwr.modules[discBatModule].index, i);
-                vTaskDelay(5);
+            // Publish ONE cell per loop iteration. Previously all 15 cells of a
+            // module (each with several fields) were published in one tight
+            // loop -> a burst of dozens of JsonDocument+String allocations that
+            // spiked internal DRAM (heap_min ~8KB) and pegged core0, causing
+            // PANIC stage 130 (rt:wait_queue). Spreading the work across
+            // iterations keeps the heap floor stable.
+            if (discBatCell < bat.cells.size()) {
+                publishDiscoveryBatCell(pwr.modules[discBatModule].index,
+                                        (int)discBatCell);
+                discBatCell++;
+                return;
             }
+            discBatCell = 0;
             discBatModule++;
             return;
 
