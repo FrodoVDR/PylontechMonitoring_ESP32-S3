@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="900" viewBox="0 0 1320 900" font-family="Helvetica, Arial, sans-serif">
+  <!-- background -->
+  <rect x="0" y="0" width="1320" height="900" fill="#ffffff"/>
+  <rect x="8" y="8" width="1304" height="884" fill="none" stroke="#bbbbbb" stroke-width="2"/>
+
+  <!-- title -->
+  <text x="660" y="48" text-anchor="middle" font-size="30" font-weight="bold" fill="#111">Pylontech Monitoring &#8211; RS-232 Interface</text>
+  <text x="660" y="76" text-anchor="middle" font-size="17" fill="#444">MAX3232 &#183; ESP32-S3-ETH &#183; C1 10 &#181;F &#183; C2 0,1 &#181;F</text>
+
+  <!-- ===================== WIRES (drawn first, under components) ===================== -->
+  <!-- W1 T1OUT (TX to battery)  orange -->
+  <line x1="270" y1="470" x2="470" y2="470" stroke="#d2691e" stroke-width="3"/>
+  <!-- W2 R1IN (RX from battery) orange -->
+  <line x1="270" y1="550" x2="470" y2="550" stroke="#d2691e" stroke-width="3"/>
+  <!-- W3 battery GND -> bus  black -->
+  <line x1="270" y1="610" x2="270" y2="760" stroke="#111" stroke-width="3"/>
+  <!-- W4 VCC +3.3V  red -->
+  <line x1="680" y1="460" x2="950" y2="460" stroke="#d11" stroke-width="3"/>
+  <!-- W5 GND rail from MAX3232 GND pin, then drop to bus  black -->
+  <line x1="680" y1="520" x2="820" y2="520" stroke="#111" stroke-width="3"/>
+  <line x1="820" y1="520" x2="820" y2="760" stroke="#111" stroke-width="3"/>
+  <!-- W6 T1IN (ESP TX / GPIO17) green, hops over W5 vertical at x=820 -->
+  <line x1="680" y1="590" x2="810" y2="590" stroke="#1a7f37" stroke-width="3"/>
+  <path d="M810,590 A10,10 0 0 1 830,590" fill="none" stroke="#1a7f37" stroke-width="3"/>
+  <line x1="830" y1="590" x2="950" y2="590" stroke="#1a7f37" stroke-width="3"/>
+  <!-- W7 R1OUT (ESP RX / GPIO16) blue, hops over W5 vertical at x=820 -->
+  <line x1="680" y1="650" x2="810" y2="650" stroke="#1f6feb" stroke-width="3"/>
+  <path d="M810,650 A10,10 0 0 1 830,650" fill="none" stroke="#1f6feb" stroke-width="3"/>
+  <line x1="830" y1="650" x2="950" y2="650" stroke="#1f6feb" stroke-width="3"/>
+  <!-- W8 ESP GND -> bus -->
+  <line x1="950" y1="710" x2="950" y2="760" stroke="#111" stroke-width="3"/>
+  <!-- GND bus -->
+  <line x1="270" y1="760" x2="1010" y2="760" stroke="#111" stroke-width="3"/>
+
+  <!-- wire labels -->
+  <text x="372" y="462" text-anchor="middle" font-size="14" fill="#a4520f">TX &#8594; Batterie</text>
+  <text x="372" y="542" text-anchor="middle" font-size="14" fill="#a4520f">RX &#8592; Batterie</text>
+  <text x="815" y="452" text-anchor="middle" font-size="14" fill="#b00">+3,3 V</text>
+  <text x="845" y="582" text-anchor="middle" font-size="14" fill="#176c2e">GPIO17 / TX</text>
+  <text x="845" y="642" text-anchor="middle" font-size="14" fill="#1456b8">GPIO16 / RX</text>
+
+  <!-- junction dots -->
+  <g fill="#111">
+    <circle cx="740" cy="460" r="4"/><circle cx="800" cy="460" r="4"/>
+    <circle cx="740" cy="520" r="4"/><circle cx="800" cy="520" r="4"/>
+    <circle cx="820" cy="520" r="4"/>
+    <circle cx="270" cy="760" r="4"/><circle cx="820" cy="760" r="4"/><circle cx="950" cy="760" r="4"/>
+  </g>
+
+  <!-- ===================== BATTERY 3-PIN TERMINAL (Image 2) ===================== -->
+  <rect x="110" y="420" width="160" height="210" rx="10" fill="#1f9d55" stroke="#0c5c2e" stroke-width="2"/>
+  <text x="190" y="448" text-anchor="middle" font-size="17" font-weight="bold" fill="#ffffff">Pylontech</text>
+  <text x="190" y="468" text-anchor="middle" font-size="13" fill="#eafff1">Konsolen-Port</text>
+  <!-- three screw terminals on right edge -->
+  <g stroke="#0c5c2e" stroke-width="2" fill="#d9d9d9">
+    <circle cx="270" cy="470" r="11"/>
+    <circle cx="270" cy="550" r="11"/>
+    <circle cx="270" cy="610" r="11"/>
+  </g>
+  <g stroke="#555" stroke-width="2">
+    <line x1="263" y1="470" x2="277" y2="470"/>
+    <line x1="263" y1="550" x2="277" y2="550"/>
+    <line x1="263" y1="610" x2="277" y2="610"/>
+  </g>
+  <text x="255" y="496" text-anchor="end" font-size="13" fill="#ffffff">T1OUT</text>
+  <text x="255" y="540" text-anchor="end" font-size="13" fill="#ffffff">R1IN</text>
+  <text x="255" y="600" text-anchor="end" font-size="13" fill="#ffffff">GND</text>
+  <!-- caption mapping -->
+  <text x="120" y="666" font-size="12" fill="#333">RJ45: Pin3&#8594;R1IN &#183; Pin6&#8594;T1OUT &#183; Pin8&#8594;GND</text>
+  <text x="120" y="684" font-size="12" fill="#333">RJ11: Pin2&#8594;R1IN &#183; Pin3&#8594;T1OUT &#183; Pin4&#8594;GND</text>
+
+  <!-- ===================== MAX3232 MODULE (Image 1) ===================== -->
+  <rect x="470" y="400" width="210" height="300" rx="8" fill="#f5f7f5" stroke="#222" stroke-width="2.5"/>
+  <text x="575" y="430" text-anchor="middle" font-size="20" font-weight="bold" fill="#111">MAX3232</text>
+  <text x="575" y="449" text-anchor="middle" font-size="11" fill="#555">RS-232 &#8596; TTL</text>
+  <text x="486" y="690" font-size="11" fill="#888">RS-232</text>
+  <text x="664" y="690" text-anchor="end" font-size="11" fill="#888">LOGIC</text>
+  <!-- left pins -->
+  <g fill="#cdd6cd" stroke="#222" stroke-width="2">
+    <circle cx="470" cy="470" r="7"/>
+    <circle cx="470" cy="550" r="7"/>
+  </g>
+  <text x="486" y="466" font-size="14" fill="#111">T1OUT</text>
+  <text x="486" y="546" font-size="14" fill="#111">R1IN</text>
+  <!-- right pins -->
+  <g fill="#cdd6cd" stroke="#222" stroke-width="2">
+    <circle cx="680" cy="460" r="7"/>
+    <circle cx="680" cy="520" r="7"/>
+    <circle cx="680" cy="590" r="7"/>
+    <circle cx="680" cy="650" r="7"/>
+  </g>
+  <text x="664" y="466" text-anchor="end" font-size="12" fill="#111">3V&#8211;5.5V</text>
+  <text x="664" y="516" text-anchor="end" font-size="14" fill="#111">GND</text>
+  <text x="664" y="586" text-anchor="end" font-size="14" fill="#111">T1IN</text>
+  <text x="664" y="646" text-anchor="end" font-size="14" fill="#111">R1OUT</text>
+  <!-- unused note -->
+  <text x="575" y="720" text-anchor="middle" font-size="12" fill="#999">n.c.: T2OUT, R2IN, T2IN, R2OUT</text>
+
+  <!-- ===================== CAPACITORS ===================== -->
+  <!-- C1 10uF (polarized / electrolytic) at x=740 between VCC(460) and GND(520) -->
+  <line x1="740" y1="460" x2="740" y2="482" stroke="#111" stroke-width="3"/>
+  <line x1="725" y1="482" x2="755" y2="482" stroke="#111" stroke-width="3"/>
+  <path d="M724,494 Q740,502 756,494" fill="none" stroke="#111" stroke-width="3"/>
+  <line x1="740" y1="497" x2="740" y2="520" stroke="#111" stroke-width="3"/>
+  <text x="731" y="478" text-anchor="end" font-size="13" fill="#b00">+</text>
+  <text x="740" y="438" text-anchor="middle" font-size="14" font-weight="bold" fill="#111">C1</text>
+  <text x="740" y="540" text-anchor="middle" font-size="12" fill="#333">10 &#181;F</text>
+  <!-- C2 0.1uF (ceramic) at x=800 -->
+  <line x1="800" y1="460" x2="800" y2="484" stroke="#111" stroke-width="3"/>
+  <line x1="785" y1="484" x2="815" y2="484" stroke="#111" stroke-width="3"/>
+  <line x1="785" y1="496" x2="815" y2="496" stroke="#111" stroke-width="3"/>
+  <line x1="800" y1="496" x2="800" y2="520" stroke="#111" stroke-width="3"/>
+  <text x="800" y="438" text-anchor="middle" font-size="14" font-weight="bold" fill="#111">C2</text>
+  <text x="800" y="540" text-anchor="middle" font-size="12" fill="#333">0,1 &#181;F</text>
+
+  <!-- ===================== ESP32-S3-ETH (Image 3) ===================== -->
+  <rect x="950" y="420" width="300" height="320" rx="10" fill="#1b1b1b" stroke="#000" stroke-width="2"/>
+  <text x="1100" y="452" text-anchor="middle" font-size="18" font-weight="bold" fill="#ffffff">ESP32-S3-ETH</text>
+  <text x="1100" y="472" text-anchor="middle" font-size="12" fill="#bbb">Waveshare (W5500)</text>
+  <!-- left pins -->
+  <g fill="#d9d9d9" stroke="#000" stroke-width="2">
+    <circle cx="950" cy="460" r="7"/>
+    <circle cx="950" cy="590" r="7"/>
+    <circle cx="950" cy="650" r="7"/>
+    <circle cx="950" cy="710" r="7"/>
+  </g>
+  <text x="966" y="456" font-size="14" fill="#fff">3V3</text>
+  <text x="966" y="586" font-size="14" fill="#7CFC9E">GPIO17 (TX)</text>
+  <text x="966" y="646" font-size="14" fill="#86b7ff">GPIO16 (RX)</text>
+  <text x="966" y="706" font-size="14" fill="#fff">GND</text>
+  <!-- RJ45 / LAN on right -->
+  <rect x="1180" y="500" width="60" height="70" rx="4" fill="#2e2e2e" stroke="#777" stroke-width="2"/>
+  <rect x="1196" y="486" width="28" height="16" fill="#2e2e2e" stroke="#777" stroke-width="2"/>
+  <text x="1210" y="588" text-anchor="middle" font-size="12" fill="#ccc">RJ45 / LAN</text>
+  <!-- USB-C + buttons -->
+  <rect x="1080" y="486" width="40" height="14" rx="6" fill="#2e2e2e" stroke="#777" stroke-width="2"/>
+  <text x="1100" y="513" text-anchor="middle" font-size="11" fill="#ccc">USB-C</text>
+  <rect x="1080" y="650" width="34" height="18" rx="3" fill="#444" stroke="#777"/>
+  <text x="1097" y="663" text-anchor="middle" font-size="10" fill="#ddd">RST</text>
+  <rect x="1130" y="650" width="40" height="18" rx="3" fill="#444" stroke="#777"/>
+  <text x="1150" y="663" text-anchor="middle" font-size="10" fill="#ddd">BOOT</text>
+  <text x="1100" y="726" text-anchor="middle" font-size="11" fill="#999">weitere GPIOs nicht belegt</text>
+
+  <!-- ===================== GROUND SYMBOL ===================== -->
+  <line x1="1010" y1="760" x2="1010" y2="778" stroke="#111" stroke-width="3"/>
+  <line x1="992" y1="778" x2="1028" y2="778" stroke="#111" stroke-width="3"/>
+  <line x1="999" y1="786" x2="1021" y2="786" stroke="#111" stroke-width="3"/>
+  <line x1="1005" y1="794" x2="1015" y2="794" stroke="#111" stroke-width="3"/>
+  <text x="1042" y="772" font-size="13" fill="#333">GND</text>
+
+  <!-- ===================== LEGEND ===================== -->
+  <rect x="70" y="110" width="300" height="126" rx="6" fill="#fafafa" stroke="#ccc"/>
+  <text x="84" y="134" font-size="14" font-weight="bold" fill="#111">Legende</text>
+  <g font-size="13" fill="#222">
+    <line x1="84" y1="154" x2="118" y2="154" stroke="#d11" stroke-width="3"/><text x="126" y="159">Versorgung +3,3 V</text>
+    <line x1="84" y1="176" x2="118" y2="176" stroke="#111" stroke-width="3"/><text x="126" y="181">GND / Masse</text>
+    <line x1="84" y1="198" x2="118" y2="198" stroke="#d2691e" stroke-width="3"/><text x="126" y="203">RS-232 Daten (Batterie)</text>
+    <line x1="84" y1="220" x2="118" y2="220" stroke="#1a7f37" stroke-width="3"/><line x1="84" y1="232" x2="118" y2="232" stroke="#1f6feb" stroke-width="3"/>
+    <text x="126" y="231">TTL TX/RX (ESP32)</text>
+  </g>
+
+  <!-- title block bottom-right -->
+  <rect x="980" y="812" width="330" height="70" rx="4" fill="#fafafa" stroke="#ccc"/>
+  <text x="996" y="834" font-size="13" font-weight="bold" fill="#111">Pylontech Monitoring</text>
+  <text x="996" y="853" font-size="12" fill="#444">RS-232 Interface &#183; ESP32-S3-ETH</text>
+  <text x="996" y="871" font-size="12" fill="#444">Rev. 1.2.8 &#183; 2026-06-30</text>
+</svg>
