@@ -19,6 +19,7 @@
 
 // ---- Project Includes ----
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "config.h"
 #include "py_wifimanager.h"
 #include "py_eth.h"
@@ -68,6 +69,15 @@ RTC_NOINIT_ATTR uint32_t g_rtcCrashMagic;
 // survives intervening clean/OTA reboots that would overwrite g_rtcLastStage).
 RTC_NOINIT_ATTR uint32_t g_rtcCrashStage;
 
+// Separate breadcrumb for the Non-Critical task (core running web/MQTT/system).
+// The Real-Time task spins its idle stage (130) every ~1 ms, which used to
+// overwrite the SHARED breadcrumb ~20x more often than the 20 ms Non-Critical
+// loop -> every crash reported as 130 regardless of the true fault location.
+// Keeping a dedicated NRT breadcrumb lets a web/MQTT/system fault surface even
+// while the RT task is idle-spinning 130.
+RTC_NOINIT_ATTR uint32_t g_rtcLastStageNRT;
+RTC_NOINIT_ATTR uint32_t g_rtcCrashStageNRT;
+
 static constexpr uint32_t RTC_CRASH_MAGIC = 0x504D4352; // "PMCR"
 
 // Boot-time snapshot of the reset reason + last crash breadcrumb, captured
@@ -77,9 +87,18 @@ String g_resetReasonStr = "UNKNOWN";
 uint32_t g_bootCrashStage = 0;
 const char* g_bootCrashStageName = "unknown";
 uint32_t g_bootCrashCount = 0;
+uint32_t g_bootCrashStageNRT = 0;
+const char* g_bootCrashStageNRTName = "unknown";
 
 static inline void setCrashStage(uint32_t stage) {
     g_rtcLastStage = stage;
+}
+
+// Breadcrumb for the Non-Critical task (web/MQTT/system loop). Kept separate
+// from the Real-Time task's stage so its idle spin (130) cannot mask a fault
+// that actually occurred in the web/MQTT/system pipeline.
+static inline void setCrashStageNRT(uint32_t stage) {
+    g_rtcLastStageNRT = stage;
 }
 
 static const char* crashStageName(uint32_t stage) {
@@ -101,6 +120,9 @@ static const char* crashStageName(uint32_t stage) {
         case 210: return "nrt:mqtt_loop";
         case 220: return "nrt:web_loop";
         case 230: return "nrt:sys_loop";
+        case 231: return "nrt:wifi_loop";
+        case 232: return "nrt:eth_loop";
+        case 233: return "nrt:sysmgr_loop";
         default:  return "unknown";
     }
 }
@@ -147,7 +169,7 @@ void realtimeTask(void* parameter) {
                     if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                         PwrBuffer* target = pwrUseA ? &pwrB : &pwrA;
                         target->stack   = stack;
-                        target->modules = mods;
+                        target->modules = std::move(mods);   // move, not deep-copy
                         pwrUseA = !pwrUseA;
                         xSemaphoreGive(g_pwrMutex);
                     }
@@ -295,7 +317,7 @@ void noncriticalTask(void* parameter) {
 
         // 1) Scheduler
         if (now - lastSched >= 20) {
-            setCrashStage(200);
+            setCrashStageNRT(200);
             lastSched = now;
             py_scheduler.loop();
         }
@@ -307,24 +329,27 @@ void noncriticalTask(void* parameter) {
 
         // 3) MQTT internal
         if (now - lastMqtt >= 20) {
-            setCrashStage(210);
+            setCrashStageNRT(210);
             lastMqtt = now;
             py_mqtt.loop();
         }
 
         // 4) Webserver
         if (now - lastWeb >= 20) {
-            setCrashStage(220);
+            setCrashStageNRT(220);
             lastWeb = now;
             WebServerModule_handle();
         }
 
         // 5) WiFi + Ethernet + System
         if (now - lastSys >= 20) {
-            setCrashStage(230);
+            setCrashStageNRT(230);
             lastSys = now;
+            setCrashStageNRT(231);
             WiFiManagerModule::loop();
+            setCrashStageNRT(232);
             EthManagerModule::loop();
+            setCrashStageNRT(233);
             SystemManager::loop();
         }
 
@@ -411,11 +436,20 @@ void setup() {
     Serial.begin(115200);
     delay(100);
 
+    // Route medium/large generic heap allocations (web-response Strings, JSON
+    // documents, api_cache concatenations) to PSRAM. The compile-time default
+    // keeps allocations < 4096 B internal; lowering the threshold to 1024 B
+    // frees precious internal DRAM for lwIP/WiFi/DMA and adds crash headroom.
+    // Capability-specific requests (MALLOC_CAP_INTERNAL / DMA) are unaffected.
+    heap_caps_malloc_extmem_enable(1024);
+
     // RTC_NOINIT content is undefined after cold boot; initialize once via magic.
     if (g_rtcCrashMagic != RTC_CRASH_MAGIC) {
         g_rtcLastStage = 0;
         g_rtcCrashCount = 0;
         g_rtcCrashStage = 0;
+        g_rtcLastStageNRT = 0;
+        g_rtcCrashStageNRT = 0;
         g_rtcCrashMagic = RTC_CRASH_MAGIC;
     }
 
@@ -443,9 +477,12 @@ void setup() {
             g_rtcCrashCount++;
             // Latch the stage of THIS crash so it survives later clean reboots.
             g_rtcCrashStage = g_rtcLastStage;
+            g_rtcCrashStageNRT = g_rtcLastStageNRT;
             Log(LOG_WARN,
                 String("*** LAST CRASH STAGE: ") + String(g_rtcCrashStage) +
                 " (" + String(crashStageName(g_rtcCrashStage)) + ")" +
+                " nrt=" + String(g_rtcCrashStageNRT) +
+                " (" + String(crashStageName(g_rtcCrashStageNRT)) + ")" +
                 " crashes=" + String(g_rtcCrashCount) + " ***");
         }
 
@@ -456,6 +493,8 @@ void setup() {
         g_bootCrashStage      = g_rtcCrashStage;
         g_bootCrashStageName  = crashStageName(g_rtcCrashStage);
         g_bootCrashCount      = g_rtcCrashCount;
+        g_bootCrashStageNRT     = g_rtcCrashStageNRT;
+        g_bootCrashStageNRTName = crashStageName(g_rtcCrashStageNRT);
     }
 
     // Mark the current boot after the previous crash state has been reported.

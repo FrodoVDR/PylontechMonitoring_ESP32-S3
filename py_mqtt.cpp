@@ -524,20 +524,11 @@ void PyMqtt::loop() {
         return;
     }
 
-    // Kopie des PWR-Buffers NUR wenn neue Daten vorliegen.
-    // WICHTIG: NICHT jede loop()-Iteration kopieren – PwrBuffer hat 8 BatteryModule mit
-    // std::map<String,String>. Kopie alle 20ms = massive Heap-Fragmentierung → Crash.
-    PwrBuffer pwrSnap;
-    bool hasPwr = false;
-    if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        if (parserHasData) {
-            pwrSnap = pwrUseA ? pwrA : pwrB;   // nur wenn wirklich neue Daten
-            hasPwr = true;
-            parserHasData = false;
-        }
-        xSemaphoreGive(g_pwrMutex);
-    }
-    PwrBuffer* pwr  = &pwrSnap;
+    // PWR is published directly under g_pwrMutex further down (read-in-place, no
+    // deep copy). Copying the whole PwrBuffer here duplicated all 8 modules'
+    // FieldMap Strings every cycle -> a large transient internal-DRAM spike that,
+    // coinciding with other allocations, drove the heap to the floor and caused
+    // OOM PANICs (observed at nrt:web_loop / nrt:sys_loop, heap_min a few hundred B).
     BatBuffer* bat  = batUseA ? &batA : &batB;
     StatBuffer* stat = statUseA ? &statA : &statB;
 
@@ -584,22 +575,33 @@ void PyMqtt::loop() {
     // PUBLISH PWR (Stack mode vs Hub mode)
     // ---------------------------------------------------------
 
-    if (hasPwr) {
+    // ---------------------------------------------------------
+    // PUBLISH PWR (Stack mode vs Hub mode)
+    // Read the active buffer IN PLACE under g_pwrMutex - no deep PwrBuffer copy.
+    // publishStack/publishBat serialize into a static buffer and write to the
+    // PubSubClient buffer, so the critical section stays short. The RT parser's
+    // buffer-swap takes the same mutex with a 50ms timeout and simply retries on
+    // the rare contention, so holding it briefly here is safe.
+    // ---------------------------------------------------------
+    if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        if (parserHasData) {
+            parserHasData = false;
+            const PwrBuffer& pwrActive = pwrUseA ? pwrA : pwrB;
 
-        if (g_batteryMode == BatteryMode::STACK) {
-            // Original behavior
-            publishStack(pwr->stack);
+            if (g_batteryMode == BatteryMode::STACK) {
+                publishStack(pwrActive.stack);
 
-            for (const auto& mod : pwr->modules) {
-                if (!mod.present) continue;
-                publishBat(mod.index, mod);
+                for (const auto& mod : pwrActive.modules) {
+                    if (!mod.present) continue;
+                    publishBat(mod.index, mod);
+                }
+            }
+            else if (g_batteryMode == BatteryMode::HUB) {
+                py_mqtt_hub.publishHubStacks(lastParsedHub);
+                py_mqtt_hub.publishHubModules(pwrActive.modules);
             }
         }
-        else if (g_batteryMode == BatteryMode::HUB) {
-            // NEW: Hub publishing
-            py_mqtt_hub.publishHubStacks(lastParsedHub);
-            py_mqtt_hub.publishHubModules(pwr->modules);
-        }
+        xSemaphoreGive(g_pwrMutex);
     }
 
     // ---------------------------------------------------------
@@ -669,12 +671,10 @@ void PyMqtt::loop() {
     // ---------------------------------------------------------
     // DISCOVERY STATE MACHINE
     // ---------------------------------------------------------
-    // Discovery spans multiple loop iterations (one phase per call). pwrSnap is
-    // only populated on iterations with fresh PWR data, so it is usually empty
-    // during the DISC_PWR/DISC_BAT phases -> module list empty -> nothing gets
-    // (re)published and the phase silently advances. Use the latest known PWR
-    // buffer for discovery so module presence/indices are always available
-    // (same lock-free latest-buffer pattern already used for bat/stat above).
+    // Discovery spans multiple loop iterations (one phase per call). Use the
+    // latest known PWR buffer for discovery so module presence/indices are always
+    // available, even on iterations without fresh PWR data (lock-free
+    // latest-buffer pattern, same as bat/stat above).
     PwrBuffer* pwrLatest = pwrUseA ? &pwrA : &pwrB;
     handleDiscoveryStep(*pwrLatest, *bat, *stat);
 

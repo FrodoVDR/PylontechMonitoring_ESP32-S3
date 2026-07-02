@@ -12,6 +12,11 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include "esp_mac.h"
+#include <esp_heap_caps.h>
+
+// Skip ArduinoOTA/mDNS UDP polling under critically low internal DRAM (see the
+// matching guard + rationale in py_wifimanager.cpp).
+static constexpr size_t ETH_OTA_MIN_FREE_HEAP = 14000;
 
 using namespace EthManagerModule;
 
@@ -181,7 +186,8 @@ void EthManagerModule::begin() {
 void EthManagerModule::loop() {
     if (!config.useEthernet) return;
 
-    if (ethGotIP && config.otaStarted) {
+    if (ethGotIP && config.otaStarted &&
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= ETH_OTA_MIN_FREE_HEAP) {
         ArduinoOTA.handle();
     }
 }

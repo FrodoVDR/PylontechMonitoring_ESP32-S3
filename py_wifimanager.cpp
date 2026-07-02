@@ -4,12 +4,20 @@
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <time.h>
+#include <esp_heap_caps.h>
 
 #include "py_wifimanager.h"
 #include "config.h"
 #include "py_log.h"
 
 using namespace WiFiManagerModule;
+
+// Skip ArduinoOTA/mDNS UDP polling when internal DRAM is critically low. The
+// lwIP/UDP parsePacket path allocates from internal heap; running it under heap
+// pressure can trip a network-stack PANIC (same failure mode guarded for the
+// web server via WEB_MIN_FREE_HEAP). Skipping a cycle is harmless: OTA retries,
+// and the web /api/ota upload path is unaffected (ArduinoOTA = espota port 3232).
+static constexpr size_t OTA_MIN_FREE_HEAP = 14000;
 
 // ----------------------------------------------------
 // Internal state
@@ -310,7 +318,8 @@ void WiFiManagerModule::loop() {
     // OTA + NTP handling
     // ----------------------------------------------------
     if (WiFi.status() == WL_CONNECTED) {
-        if (config.otaStarted) {
+        if (config.otaStarted &&
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= OTA_MIN_FREE_HEAP) {
             ArduinoOTA.handle();
         }
         handleNtpLogic();

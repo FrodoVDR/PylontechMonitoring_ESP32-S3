@@ -168,6 +168,8 @@ inline void registerMonitoringAPI() {
         reset["reason"] = g_resetReasonStr;
         reset["last_stage"] = g_bootCrashStage;
         reset["last_stage_name"] = g_bootCrashStageName;
+        reset["last_stage_nrt"] = g_bootCrashStageNRT;
+        reset["last_stage_nrt_name"] = g_bootCrashStageNRTName;
         reset["crashes"] = g_bootCrashCount;
 
         JsonObject spiffs = doc.createNestedObject("spiffs");

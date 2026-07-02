@@ -63,7 +63,9 @@ inline void handleCpuApi() {
     }
 
     json += "],";
-    json += "\"heap_free\":"  + String(esp_get_free_heap_size())         + ",";
+    // Internal-DRAM free (not the global free, which includes ~8MB PSRAM and is
+    // misleading). Matches /api/monitoring heap_free and the heap_min below.
+    json += "\"heap_free\":"  + String((uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + ",";
     // Internal-DRAM low-water mark (not the global min, which includes PSRAM).
     json += "\"heap_min\":"   + String((uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + ",";
     json += "\"heap_psram\":"     + String(ESP.getFreePsram())           + ",";

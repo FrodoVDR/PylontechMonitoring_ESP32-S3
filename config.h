@@ -18,6 +18,8 @@ extern String g_resetReasonStr;
 extern uint32_t g_bootCrashStage;
 extern const char* g_bootCrashStageName;
 extern uint32_t g_bootCrashCount;
+extern uint32_t g_bootCrashStageNRT;
+extern const char* g_bootCrashStageNRTName;
 extern SemaphoreHandle_t g_pwrMutex;
 extern SemaphoreHandle_t g_healthMutex;
 
@@ -388,7 +390,7 @@ public:
     MqttConfig mqtt;
     BatteryConfig battery;
 
-    String firmwareVersion = "1.2.8";
+    String firmwareVersion = "1.2.13";
     String currentTime     = "";
     String lastPwrUpdate   = "";
     uint16_t detectedModules = 0;

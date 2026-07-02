@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 ## ToDo
 
 - other Homeautomation (Discoverer)
+## 2026-07-01
+- 1.2.13
+- UI fix (CPU Monitor page "Heap frei" always showed ~8.0 MB): `web/cpu_api.h` reported `heap_free` via `esp_get_free_heap_size()`, which returns the GLOBAL free heap including the ~8MB PSRAM - useless for judging internal-DRAM pressure (the actual stability-relevant number). Changed to `heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)`, matching the `heap_min` value already reported on the same page and the `memory.heap_free` in `/api/monitoring` (~60KB). The CPU Monitor "Heap frei" now shows real internal DRAM.
+
+## 2026-07-01
+- 1.2.12
+- Heap headroom (PSRAM offloading): after the 1.2.11 transient fix `heap_min` recovered to ~27KB but a single ~20KB transient (heavy web-response builder) still briefly drove it to ~7KB - well below the 14000/15000 low-heap guards. To add a large permanent safety margin, `setup()` now calls `heap_caps_malloc_extmem_enable(1024)`, lowering the PSRAM allocation threshold from the compile-time default (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` = 4096) to 1024 bytes. Generic heap allocations >= 1024 B (web-response Strings, JSON documents, api_cache concatenations) now land in the 8MB PSRAM instead of the scarce internal DRAM, freeing internal RAM for lwIP/WiFi/DMA and the FieldMap/parser buffers. Capability-specific requests (`MALLOC_CAP_INTERNAL` / DMA, used by the network stack) are unaffected and stay internal, so stability is preserved. Expected result: internal `heap_min` stays well above the guard thresholds even during coincident web/MQTT/network activity.
+
+## 2026-07-01
+- 1.2.11
+- Crash fix (root-cause, transient internal-DRAM spike): eliminated the recurring ~50KB transient that drove `heap_min` to a few hundred bytes and caused the OOM PANICs (seen at nrt:sys_loop AND nrt:web_loop - distributed, i.e. whichever unguarded allocation ran during the spike aborted). Root cause = three per-PWR-cycle DEEP COPIES of the 8-module `PwrBuffer` (each module holds a `FieldMap` of Strings): (1) `py_mqtt.cpp` copied the whole `PwrBuffer` into a local `pwrSnap` every publish cycle; (2) `py_uart.cpp` and (3) the HUB path in the sketch assigned `target->modules = mods` (copy) on every parse. FIXES: PWR is now published by reading the active double-buffer IN PLACE under `g_pwrMutex` (no `pwrSnap` copy); the two parser buffer-swaps use `std::move(mods)` instead of a deep copy. This removes hundreds of transient String allocations per cycle and keeps internal-DRAM headroom high, so coincident web/MQTT/network allocations no longer hit the floor.
+
+## 2026-07-01
+- 1.2.10
+- Crash fix (PANIC nrt:sys_loop): with the 1.2.9 per-core breadcrumbs the recurring crash (~3:45h) was pinned to the Non-Critical **system loop** (`reset.last_stage_nrt = 230`), while `heap_min` reached ~3KB. Root cause: `WiFiManagerModule::loop()` and `EthManagerModule::loop()` call `ArduinoOTA.handle()` every cycle, an UNGUARDED lwIP/UDP `parsePacket()` (+ mDNS) that allocates from internal DRAM. When a transient elsewhere briefly drove internal heap near the floor, this unguarded network allocation was the one that tipped into OOM/abort - exactly the failure mode already guarded for the web server (`WEB_MIN_FREE_HEAP`). FIX: `ArduinoOTA.handle()` is now skipped in both loops when internal DRAM is below `OTA_MIN_FREE_HEAP` (14000); a skipped cycle is harmless (OTA retries; the web `/api/ota` upload path uses a different mechanism and is unaffected). Also split crash stage 230 into finer breadcrumbs 231 (wifi_loop) / 232 (eth_loop) / 233 (sysmgr_loop) to confirm the exact sub-call on any future sys-loop panic.
+## 2026-07-01
+- 1.2.9
+- Crash diagnostics: per-core crash breadcrumbs. Root-cause analysis of the recurring PANIC every ~2.5-4.5h showed there is NO persistent heap leak (free internal DRAM recovers to ~55KB), but `heap_min` repeatedly hits ~260B - a rare transient allocation coincidence briefly consumes almost all internal DRAM and occasionally tips a concurrent allocation into OOM/abort. The reported crash stage was ALWAYS `130` (rt:wait_queue) because both FreeRTOS tasks shared one breadcrumb (`g_rtcLastStage`) and the Real-Time task's idle spin rewrites stage 130 every ~1ms - ~20x more often than the 20ms Non-Critical loop - masking the true fault location. Added a dedicated Non-Critical breadcrumb (`g_rtcLastStageNRT`, stages 200/210/220/230 = scheduler/MQTT/web/system) that is latched independently on crash and reported via `/api/monitoring` as `reset.last_stage_nrt` / `last_stage_nrt_name`. The next crash will reveal whether the fault occurs in the MQTT, web, or system pipeline so it can be fixed precisely.
 
 ## 2026-06-30
 - 1.2.8

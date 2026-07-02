@@ -84,7 +84,7 @@ RJ45 Pin 8 (brown)       -> GND
 
 Connect to the **master battery** if multiple batteries are present.
 
-![Schematic](Schemetics.png)
+![Schematic](Schematics.png)
 
 ---
 

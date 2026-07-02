@@ -84,7 +84,7 @@ RJ45 Pin 8 (braun)     → GND
 
 > Bei mehreren Batterien immer am **Master** anschließen.
 
-![Schaltplan](Schemetics.png)
+![Schaltplan](Schematics.png)
 
 ---
 

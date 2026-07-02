@@ -453,7 +453,7 @@ bool PyUart::sendCommand(const char* cmd) {
                 if (g_pwrMutex && xSemaphoreTake(g_pwrMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                     PwrBuffer* target = pwrUseA ? &pwrB : &pwrA;
                     target->stack = stack;
-                    target->modules = mods;
+                    target->modules = std::move(mods);   // move, not deep-copy (avoids transient FieldMap-String duplication)
                     pwrUseA = !pwrUseA;
                     xSemaphoreGive(g_pwrMutex);
                 }
