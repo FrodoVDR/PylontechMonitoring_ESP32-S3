@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 ## ToDo
 
 - other Homeautomation (Discoverer)
+
+## 2026-07-03
+- CheckMK: fixed a Docker container restart loop triggered by the CheckMK image update (2.4.0p32 -> p33). `omd update` / `cmk-update-config` aborted with "Error in wato plug-in 'datasource_programs.agent_pylontech' ... 'cmk.gui.plugins.wato.datasource_programs' is not a package", leaving the site half-migrated and the container crash-looping (RestartCount climbing). Root cause: the legacy `agent_pylontech_ruleset.py` had been deployed as a custom WATO plugin into a `.../wato/datasource_programs/` DIRECTORY in the site's local overlay - but on 2.4 `datasource_programs` is a plain module, not a package, so the plugin loader's import failed and blocked the config migration. The ruleset also imports the enterprise-only `agent_bakery`, so it never worked on the RAW edition. Fix on the server: removed the broken plugin file (backed up), ran `cmk-update-config --conflict install` (success), restarted the container - all OMD services healthy again. Repo changes: `agent_pylontech_ruleset.py` docstring now clearly marks the file as REFERENCE ONLY / DO NOT DEPLOY on 2.4 and points to the built-in "Individual program call instead of agent access" rule; added a "Container-Restart-Loop nach Image-Update" troubleshooting section to `CHECKMK_DEPLOYMENT.md`. Monitoring (special agent `agents/special/agent_pylontech`) was unaffected throughout.
+
 ## 2026-07-01
 - 1.2.13
 - UI fix (CPU Monitor page "Heap frei" always showed ~8.0 MB): `web/cpu_api.h` reported `heap_free` via `esp_get_free_heap_size()`, which returns the GLOBAL free heap including the ~8MB PSRAM - useless for judging internal-DRAM pressure (the actual stability-relevant number). Changed to `heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)`, matching the `heap_min` value already reported on the same page and the `memory.heap_free` in `/api/monitoring` (~60KB). The CPU Monitor "Heap frei" now shows real internal DRAM.

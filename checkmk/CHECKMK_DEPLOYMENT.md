@@ -153,6 +153,46 @@ curl -s http://192.168.88.20/api/monitoring | python3 -m json.tool
 2. Nutze die eingebaute Regel: **Individual program call instead of agent access**.
 3. Falls die Suche nichts zeigt: Berechtigung prüfen (`Can add or modify executables`).
 
+### Container-Restart-Loop nach Image-Update (z.B. p32 -> p33)
+
+**Symptom:** Nach einem CheckMK-Image-Update crasht der Container immer wieder
+(`docker ps` zeigt steigenden `RestartCount`). `docker logs` zeigt:
+
+```
+Error in wato plug-in 'datasource_programs.agent_pylontech'
+ModuleNotFoundError: No module named
+  'cmk.gui.plugins.wato.datasource_programs.agent_pylontech';
+  'cmk.gui.plugins.wato.datasource_programs' is not a package
+... Update aborted with Error: incompatible local file.
+```
+
+**Ursache:** Die Datei `agent_pylontech_ruleset.py` wurde fälschlich als
+custom WATO-Plugin nach
+`local/lib/python3/cmk/gui/plugins/wato/datasource_programs/agent_pylontech.py`
+deployt. In 2.4 ist `datasource_programs` ein Modul (keine Package-Directory),
+weshalb `cmk-update-config` beim Import abbricht und das Update fehlschlägt.
+
+**Fix:**
+
+```bash
+# 1. Kaputtes Plugin entfernen (Monitoring nutzt es NICHT)
+docker exec ckeckmk bash -lc '
+  D=/omd/sites/main/local/lib/python3/cmk/gui/plugins/wato/datasource_programs
+  cp -v $D/agent_pylontech.py /omd/sites/main/local/agent_pylontech_ruleset.py.bak.$(date +%Y%m%d%H%M%S)
+  rm -v $D/agent_pylontech.py
+  rmdir -v $D 2>/dev/null'
+
+# 2. Config-Migration nachholen
+docker exec -u main ckeckmk cmk-update-config --conflict install
+
+# 3. Container sauber neu starten
+docker restart ckeckmk
+```
+
+Das eigentliche Monitoring (Special Agent `agents/special/agent_pylontech`) ist
+davon nicht betroffen. **Niemals** `agent_pylontech_ruleset.py` in ein
+`datasource_programs/`-Verzeichnis deployen — die Datei ist nur Referenz.
+
 ### Service Discovery findet keine Services
 
 1. Host-Datasource prüfen: **Setup > Hosts** > Host > **Datasources**

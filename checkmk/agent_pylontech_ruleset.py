@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
 """
-CheckMK WATO Ruleset Plugin for PylontechMonitoring Custom Agent
-Allows configuration of ESP32 monitoring via CheckMK UI
+CheckMK WATO Ruleset Plugin for PylontechMonitoring Custom Agent (REFERENCE ONLY)
 
-Deploy to:
-  ~/local/lib/check_mk/gui/plugins/wato/datasource_programs/agent_pylontech.py
+!!! DO NOT DEPLOY THIS FILE ON CheckMK 2.4 !!!
+
+This legacy WATO ruleset is written against the CheckMK 2.1/2.2 GUI plugin API
+(`cmk.gui.plugins.wato`, `cmk.gui.cee.plugins.wato.agent_bakery`). On 2.4 it is
+both unnecessary and actively harmful:
+
+  * `cmk.gui.plugins.wato.datasource_programs` is a plain MODULE (.py) on 2.4, not
+    a package. Dropping this file into a `.../wato/datasource_programs/` DIRECTORY
+    in the site's local overlay makes the plugin loader try to import
+    `...datasource_programs.agent_pylontech`, which fails with
+    "datasource_programs is not a package". That aborts `cmk-update-config` /
+    `omd update` and puts the Docker container into a restart loop
+    (observed on the p32 -> p33 update, 2026-07).
+  * `BakeryHostSettings` lives in the enterprise (CEE) tree and cannot be imported
+    on the RAW edition anyway.
+
+Correct setup on 2.4 (see CHECKMK_DEPLOYMENT.md): NO custom WATO plugin is needed.
+Deploy only the special agent script `pylontech_custom_agent.py` to
+`.../local/share/check_mk/agents/special/agent_pylontech` and wire it up with the
+built-in rule "Individual program call instead of agent access". The threshold
+defaults below are kept purely as documentation of the agent CLI options
+(--heap-free-warn/crit, --heap-largest-warn/crit).
 """
 
 from cmk.gui.i18n import _
