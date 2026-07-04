@@ -1,7 +1,16 @@
+:root {
+    --topbar-h: 56px;
+    --sidebar-w: 220px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
 body {
     margin: 0;
     font-family: Arial, sans-serif;
     background: #f2f2f7;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
 }
 
 .title-with-icons {
@@ -14,42 +23,60 @@ body {
 .topbar {
     background: #1e1e2f;
     color: white;
-    padding: 12px;
+    min-height: var(--topbar-h);
+    padding: 8px 12px;
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 30;
 }
 
+.topbar h1 {
+    font-size: 20px;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.title-with-icons { min-width: 0; }
+
 .burger {
-    font-size: 24px;
+    font-size: 26px;
     background: none;
     border: none;
     color: white;
     cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+    border-radius: 6px;
 }
+
+.burger:active { background: rgba(255,255,255,0.15); }
 
 /* Sidebar */
 .sidebar {
-    width: 220px;
+    width: var(--sidebar-w);
     background: #2c2c3e;
     color: white;
-    height: 100vh;
+    height: calc(100vh - var(--topbar-h));
     position: fixed;
-    top: 100px;
+    top: var(--topbar-h);
     left: 0;
-    padding-top: 20px;
-    z-index: 0;   /* Sidebar über Header */
-
+    padding-top: 10px;
+    overflow-y: auto;
+    z-index: 25;
+    transition: transform 0.25s ease;
 }
 
 .sidebar nav a {
     display: block;
-    padding: 12px 20px;
+    padding: 14px 20px;
     color: white;
     text-decoration: none;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 
 .sidebar nav a:hover {
@@ -58,8 +85,10 @@ body {
 
 /* Content */
 #content {
-    margin-left: 240px;
+    margin-left: var(--sidebar-w);
     padding: 20px;
+    max-width: 100%;
+    overflow-x: hidden;
 }
 
 /* Dashboard Grid */
@@ -84,16 +113,38 @@ body {
 /* Mobile */
 @media (max-width: 800px) {
     .sidebar {
-        left: -240px;
-        transition: 0.3s;
+        left: 0;
+        transform: translateX(-100%);
+        box-shadow: 2px 0 12px rgba(0,0,0,0.4);
     }
     .sidebar.open {
-        left: 0;
+        transform: translateX(0);
     }
     #content {
         margin-left: 0;
+        padding: 14px;
     }
+    .topbar h1 { font-size: 17px; }
 }
+
+/* Desktop: burger + backdrop not needed (sidebar is permanent) */
+@media (min-width: 801px) {
+    .burger { display: none; }
+    .backdrop { display: none !important; }
+}
+
+/* Sidebar backdrop (mobile) */
+.backdrop {
+    display: none;
+    position: fixed;
+    top: var(--topbar-h);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 20;
+}
+.backdrop.show { display: block; }
 
 .logo-icon {
     height: 28px;      /* feste Höhe */
@@ -138,7 +189,8 @@ body {
 }
 
 .console-controls input {
-    width: 300px;
+    width: 100%;
+    max-width: 300px;
 }
 
 .quick-commands a {
@@ -166,6 +218,8 @@ body {
 
 .conn-body {
     padding: 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .msg {
@@ -221,7 +275,7 @@ body {
 }
 .conn-grid-3 {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 20px;
 }
 /* Tabellen-Layout für Parser-Seiten */
@@ -252,4 +306,108 @@ body {
 
 .conn-table input[type="checkbox"] {
     transform: scale(1.2);
+}
+
+/* ---------------------------------------------------------------
+   Responsive & touch enhancements
+   --------------------------------------------------------------- */
+
+/* Never let long <pre>/images break the page width */
+#content pre,
+#content img {
+    max-width: 100%;
+}
+
+#content pre {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Horizontal scroll wrappers for wide tables on small screens */
+.table-scroll,
+#stat_groups,
+#info_groups {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+}
+
+/* Generic card container used by console/log/framedump pages */
+.box {
+    background: #fff;
+    padding: 14px;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    margin-bottom: 12px;
+}
+
+/* Generic tables (CPU monitor etc.) */
+.table {
+    border-collapse: collapse;
+    background: #fff;
+}
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
+}
+.table th { background: #e5e5e5; }
+
+/* Touch-friendly form controls (16px avoids iOS zoom-on-focus) */
+#content input[type="text"],
+#content input[type="password"],
+#content input[type="number"],
+#content input[type="date"],
+#content input[type="time"],
+#content input[type="search"],
+#content select {
+    font-size: 16px;
+    padding: 7px 9px;
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    max-width: 100%;
+}
+
+.conn-table input[type="text"],
+.conn-table input[type="number"],
+.conn-table select {
+    padding: 6px;
+}
+
+/* Touch-friendly buttons */
+#content button {
+    min-height: 42px;
+    padding: 9px 16px;
+    font-size: 15px;
+    border: none;
+    border-radius: 8px;
+    background: #1e90ff;
+    color: #fff;
+    cursor: pointer;
+}
+#content button:active { filter: brightness(0.9); }
+
+#content .btn-save { background: #22aa22; }
+
+/* Quick command chips (Battery Console) */
+.cmd,
+.quick-commands a {
+    display: inline-block;
+    margin: 4px 6px 4px 0;
+    padding: 7px 13px;
+    background: #e5e5ef;
+    color: #1e1e2f;
+    border-radius: 16px;
+    text-decoration: none;
+    font-size: 14px;
+}
+.cmd:active { background: #d0d0e0; }
+
+.box input[type="text"] { max-width: 100%; }
+
+@media (max-width: 800px) {
+    .card { padding: 16px; }
+    .console-box { height: 55vh; }
+    .console-controls input { width: 100%; }
+    .wifi-row { flex-wrap: wrap; }
 }

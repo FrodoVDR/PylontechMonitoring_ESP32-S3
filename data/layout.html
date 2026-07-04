@@ -39,6 +39,8 @@
 </nav>
 </aside>
 
+<div id="backdrop" class="backdrop" onclick="closeSidebar()"></div>
+
 <main id="content">
     <!-- Inhalt wird dynamisch geladen -->
 </main>
@@ -50,7 +52,14 @@ let activePageScripts = [];
 // Sidebar öffnen/schließen
 // -------------------------------------------------------------
 function toggleSidebar() {
-    document.getElementById('sidebar').classList.toggle('open');
+    const sb = document.getElementById('sidebar');
+    const open = sb.classList.toggle('open');
+    document.getElementById('backdrop').classList.toggle('show', open);
+}
+
+function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('backdrop').classList.remove('show');
 }
 
 // -------------------------------------------------------------
@@ -59,7 +68,7 @@ function toggleSidebar() {
 document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll("#sidebar a").forEach(a => {
         a.addEventListener("click", () => {
-            document.getElementById("sidebar").classList.remove("open");
+            closeSidebar();
         });
     });
 
