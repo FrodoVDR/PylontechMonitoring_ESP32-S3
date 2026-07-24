@@ -6,23 +6,42 @@
 extern HealthStatus health;
 
 // Display-Pins
-// Hinweis: GPIO 23, 26, 27, 33 sind auf dem ESP32-S3 WROOM-Modul nicht
-// als externe Pins verfügbar (26-32 intern für Octal-SPI-Flash reserviert).
-// Pins können je nach Verdrahtung angepasst werden.
+// GPIO 26-32 sind auf dem ESP32-S3 intern für Octal-SPI-Flash reserviert.
+// GPIO 4-7 sind auf dem Waveshare ESP32-S3-ETH intern mit dem TF-Kartenslot
+// verdrahtet und stehen am Pin-Header NICHT zur Verfügung (SD_CS=4, SD_MISO=5,
+// SD_MOSI=6, SD_CLK=7) – daher hier nicht verwenden!
+//
+// SPI-Bus:  Display nutzt HSPI (SPI3), damit ETH weiterhin den Default-SPI
+//           (SPI2/FSPI, GPIO 11-14) exklusiv verwenden kann.
+//
+// Anschluss-Kurzreferenz (Waveshare ESP32-S3 ETH → Display-Modul):
+//   GPIO 18 → MOSI (SDA/DIN)
+//   GPIO 15 → SCK  (CLK)
+//   GPIO 38 → CS
+//   GPIO 39 → DC   (RS/A0)
+//   GPIO 40 → RST
+//   GPIO 41 → BL   (Backlight PWM, 3.3V wenn kein PWM gewünscht)
+//   3.3V    → VCC,  GND → GND
+// MISO wird nicht angeschlossen (ST7735 ist write-only).
 #define TFT_CS     38
 #define TFT_DC     39
 #define TFT_RST    40
 
-#define TFT_SCK    14
-#define TFT_MOSI   13
-#define TFT_MISO   12
+#define TFT_SCK     15  // SPI3 – frei am Header, kein Konflikt mit SD-Slot (4-7) oder ETH (SPI2: SCLK=13)
+#define TFT_MOSI    18  // SPI3 – frei am Header, kein Konflikt mit SD-Slot (4-7) oder ETH (SPI2: MOSI=11)
+// MISO wird nicht benötigt (ST7735 ist write-only)
 
 // Backlight-Pin (PWM)
 #define TFT_BL          41
 #define TFT_BL_CHANNEL  LEDC_CHANNEL_0
 #define TFT_BL_TIMER    LEDC_TIMER_0
 
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+// Eigener SPI-Bus (SPI3/HSPI) für das Display.
+// ETH belegt den Default-SPI (SPI2/FSPI) über SPI.begin() in py_eth.cpp.
+// HSPI (=2) ist auf ESP32-S3 der zweite verfügbare SPI-Host (SPI3_HOST).
+static SPIClass displaySPI(HSPI);
+
+Adafruit_ST7735 tft = Adafruit_ST7735(&displaySPI, TFT_CS, TFT_DC, TFT_RST);
 PyDisplay display;
 
 bool wifiAPMode = false;
@@ -79,8 +98,8 @@ void PyDisplay::begin() {
     ch.hpoint         = 0;
     ledc_channel_config(&ch);
 
-    // SPI starten
-    SPI.begin(TFT_SCK, TFT_MISO, TFT_MOSI);
+    // SPI3 starten (MISO=-1, ST7735 ist write-only)
+    displaySPI.begin(TFT_SCK, /*MISO=*/-1, TFT_MOSI, /*SS=*/-1);
 
     // Display starten
     tft.initR(INITR_BLACKTAB);
@@ -188,30 +207,46 @@ void PyDisplay::drawValues() {
     // ---------------------------------------------------------
     // HEALTH BLOCK (nur neu zeichnen, wenn sich etwas geändert hat)
     // ---------------------------------------------------------
-    extern HealthStatus health;
+    // `health` (Vectors + Strings) wird von py_parser_pwr.cpp (Core 1,
+    // realtimeTask) unter g_healthMutex geschrieben. Ungeschütztes Lesen hier
+    // (Core 0) war eine Data Race auf std::vector/String internals -> konnte
+    // während eines laufenden Health-Updates zu Heap-Korruption/Crash führen.
+    // Fix: benötigte Felder kurz unter Lock kopieren, Lock sofort freigeben,
+    // dann mit den lokalen Kopien zeichnen.
+    std::vector<int> okModules, warnModules, errorModules;
+    String healthColor = lastHealthColor;
+    String strongestMessage = lastHealthMsg;
+    if (g_healthMutex && xSemaphoreTake(g_healthMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        okModules = health.okModules;
+        warnModules = health.warnModules;
+        errorModules = health.errorModules;
+        healthColor = health.color;
+        strongestMessage = health.strongestMessage;
+        xSemaphoreGive(g_healthMutex);
+    }
 
     // Strings für Vergleich erzeugen
     String okStr = "";
-    for (int m : health.okModules) okStr += String(m) + " ";
+    for (int m : okModules) okStr += String(m) + " ";
 
     String warnStr = "";
-    for (int m : health.warnModules) warnStr += String(m) + " ";
+    for (int m : warnModules) warnStr += String(m) + " ";
 
     String errStr = "";
-    for (int m : health.errorModules) errStr += String(m) + " ";
+    for (int m : errorModules) errStr += String(m) + " ";
 
     bool changed =
-        (lastHealthColor != health.color) ||
+        (lastHealthColor != healthColor) ||
         (lastHealthOK != okStr) ||
         (lastHealthWarn != warnStr) ||
         (lastHealthErr != errStr) ||
-        (lastHealthMsg != health.strongestMessage);
+        (lastHealthMsg != strongestMessage);
 
     if (changed) {
         // Hintergrundfarbe
         uint16_t bg =
-            (health.color == "green")  ? ST77XX_BLACK :
-            (health.color == "yellow") ? ST77XX_YELLOW :
+            (healthColor == "green")  ? ST77XX_BLACK :
+            (healthColor == "yellow") ? ST77XX_YELLOW :
                                         ST77XX_RED;
 
         // Block löschen
@@ -219,7 +254,7 @@ void PyDisplay::drawValues() {
 
         // Textfarbe
         uint16_t fg =
-            (health.color == "red" || health.color == "yellow")
+            (healthColor == "red" || healthColor == "yellow")
                 ? ST77XX_BLACK
                 : ST77XX_GREEN;
 
@@ -243,14 +278,14 @@ void PyDisplay::drawValues() {
 
         // Zeile 4
         tft.setCursor(2, 98);
-        tft.print(health.strongestMessage);
+        tft.print(strongestMessage);
 
         // Cache aktualisieren
-        lastHealthColor = health.color;
+        lastHealthColor = healthColor;
         lastHealthOK = okStr;
         lastHealthWarn = warnStr;
         lastHealthErr = errStr;
-        lastHealthMsg = health.strongestMessage;
+        lastHealthMsg = strongestMessage;
     }
 
 

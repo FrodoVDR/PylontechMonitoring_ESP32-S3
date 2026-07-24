@@ -1,8 +1,8 @@
 // =========================
 // PylontechMonitoring (ESP32-S3 WROOM)
 // Clean architecture with 2 tasks:
-//   - Task 1 (Core 0): Real‑time pipeline (UART + Parser)
-//   - Task 2 (Core 1): Non‑critical pipeline (Scheduler + MQTT + Webserver + WiFi)
+//   - Task 1 (Core 1): Real‑time pipeline (UART + Parser)
+//   - Task 2 (Core 0): Non‑critical pipeline (Scheduler + MQTT + Webserver + WiFi)
 // =========================
 
 
@@ -123,12 +123,15 @@ static const char* crashStageName(uint32_t stage) {
         case 231: return "nrt:wifi_loop";
         case 232: return "nrt:eth_loop";
         case 233: return "nrt:sysmgr_loop";
+        case 240: return "nrt:display_pwr";
+        case 241: return "nrt:display_wifi";
+        case 242: return "nrt:display_loop";
         default:  return "unknown";
     }
 }
 
 // =========================
- //  Task 1: Real‑Time Pipeline (Core 0)
+ //  Task 1: Real‑Time Pipeline (Core 1)
  //  UART → Parser → Queue
  // =========================
 void realtimeTask(void* parameter) {
@@ -299,7 +302,7 @@ void realtimeTask(void* parameter) {
 }
 
 // =========================
-//  Task 2: Non‑Critical Pipeline (Core 1)
+//  Task 2: Non‑Critical Pipeline (Core 0)
 //  Scheduler + MQTT + Webserver + WiFi
 // =========================
 void noncriticalTask(void* parameter) {
@@ -392,6 +395,7 @@ void noncriticalTask(void* parameter) {
             // Nur die 4 benötigten Integer lesen – KEIN volles PwrBuffer-Copy!
             // auto pwr = pwrUseA ? pwrA : pwrB  wäre eine unsynchronisierte Kopie
             // von 8 BatteryModules mit std::map (Race condition + Heap-Fragmentation).
+            setCrashStageNRT(240);
             {
                 int avgV = 0, totC = 0, temp = 0, soc = 0;
                 bool hasPwrDisplay = false;
@@ -411,6 +415,7 @@ void noncriticalTask(void* parameter) {
                 }
             }
 
+            setCrashStageNRT(241);
             bool apMode = (WiFi.getMode() == WIFI_MODE_AP || WiFi.getMode() == WIFI_MODE_APSTA);
 
             display.updateWifi(
@@ -420,6 +425,7 @@ void noncriticalTask(void* parameter) {
                 apMode
             );
 
+            setCrashStageNRT(242);
             display.loop();
         }
 

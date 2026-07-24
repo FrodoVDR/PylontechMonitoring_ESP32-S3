@@ -79,6 +79,7 @@ bool detectHubMode() {
     String buffer = "";
 
     while (millis() - start < timeout) {
+        uint32_t n = 0;
         while (Serial2.available()) {
             char c = Serial2.read();
             buffer += c;
@@ -91,6 +92,15 @@ bool detectHubMode() {
                 Log(LOG_INFO, "UART: Hub-Frame erkannt → HUB-Modus");
                 return true;
             }
+
+            // Continuous noise (e.g. a floating RX line with no battery
+            // attached) can keep available() true indefinitely. taskYIELD()
+            // is NOT enough here: it only lets equal/higher-priority ready
+            // tasks run, but the IDLE task (whose watchdog must be fed) has
+            // a LOWER priority than realtimeTask and only runs while this
+            // task is actually BLOCKED. Use vTaskDelay(1) so IDLE gets CPU
+            // time periodically and the task watchdog does not fire.
+            if ((++n & 0x3F) == 0) vTaskDelay(1);
         }
         delay(5);
     }
@@ -106,9 +116,14 @@ bool detectHubMode() {
 // @ ... $$ frame is found. Older/partial data before '@' is discarded.
 // ---------------------------------------------------------
 bool PyUart::pollHubFrame() {
-    // Drain all currently available bytes
+    // Drain all currently available bytes. A continuous stream (e.g. noise
+    // on a floating RX line without a battery attached) must not starve the
+    // task watchdog: taskYIELD() would NOT help since the IDLE task (lower
+    // priority than realtimeTask) only runs while this task actually blocks.
+    uint32_t n = 0;
     while (Serial2.available()) {
         hubBuf += (char)Serial2.read();
+        if ((++n & 0x3F) == 0) vTaskDelay(1);
     }
 
     // Prevent memory exhaustion: keep only the last 24 KB
@@ -296,6 +311,16 @@ int PyUart::readFromSerial() {
 
             if (strstr(g_szRecvBuff, "pylon>"))
                 return recvLen;
+
+            // A continuous byte stream (e.g. noise picked up on a floating
+            // RX line when no battery is attached) can keep available()
+            // true for a long time without ever reaching the idle/timeout
+            // branch below. taskYIELD() would NOT help here (it only lets
+            // equal/higher-priority ready tasks run) - vTaskDelay(1) actually
+            // blocks so the lower-priority IDLE task runs periodically and
+            // the task watchdog does not fire (TASK_WATCHDOG, stage
+            // rt:uart_send).
+            if ((recvLen & 0x3F) == 0) vTaskDelay(1);
         }
 
         if (!gotByte) {
@@ -333,7 +358,14 @@ bool PyUart::sendCommandAndReadSerialResponse(const char* cmd) {
         unsigned long lastActivity = startMs;
         while ((millis() - startMs) < 1000UL) {
             if (Serial2.available()) {
-                while (Serial2.available()) { Serial2.read(); drained++; }
+                while (Serial2.available()) {
+                    Serial2.read();
+                    drained++;
+                    // Continuous noise must not starve the IDLE task/watchdog.
+                    // vTaskDelay(1), not taskYIELD(): IDLE has lower priority
+                    // than realtimeTask and only runs while this task blocks.
+                    if ((drained & 0x3F) == 0) vTaskDelay(1);
+                }
                 lastActivity = millis();
             } else if ((millis() - lastActivity) >= 80UL) {
                 break;

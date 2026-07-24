@@ -52,6 +52,7 @@ Forked von [irekzielinski/Pylontech-Battery-Monitoring](https://github.com/irekz
 | Kondensator C2 | 0,1 µF (empfohlen) |
 | Kabel US2000B | RJ11 (4-adrig!) |
 | Kabel US2000C / US3000C / US5000 | RJ45 |
+| TFT-Display 1,8" ST7735(S) *(optional)* | z. B. Waveshare 1,8inch LCD Module; SPI, 128×160 px |
 
 ---
 
@@ -83,6 +84,31 @@ RJ45 Pin 8 (braun)     → GND
 ```
 
 > Bei mehreren Batterien immer am **Master** anschließen.
+
+### Optionales TFT-Display (ST7735, 1,8" SPI)
+
+Das Display ist **optional** und zeigt Spannung, Strom, Temperatur, SOC sowie WiFi-/MQTT-Status direkt am Gerät an.  
+Es nutzt den zweiten SPI-Bus **(SPI3 / HSPI, GPIO 18/15)** und teilt sich **keine Pins** mit dem W5500 Ethernet (SPI2 / FSPI, GPIO 11–14).
+
+> **GPIO 4–7 sind auf dem Waveshare ESP32-S3-ETH fest mit dem TF-Kartenslot verdrahtet**
+> (SD_CS=4, SD_MISO=5, SD_MOSI=6, SD_CLK=7) und stehen am Pin-Header nicht zur Verfügung.
+
+```
+ESP32-S3         →  Display-Modul
+─────────────────────────────────
+GPIO 18  (MOSI)  →  SDA / DIN / MOSI
+GPIO 15  (SCK)   →  SCK / CLK
+GPIO 38  (CS)    →  CS
+GPIO 39  (DC)    →  DC / RS / A0
+GPIO 40  (RST)   →  RST
+GPIO 41  (BL)    →  BL / LED  (PWM-Backlight; alternativ direkt 3,3 V)
+3,3 V            →  VCC
+GND              →  GND
+─────────────────────────────────
+MISO             →  nicht anschließen  (ST7735 ist write-only)
+```
+
+> Geeignete Module: **Waveshare 1,8inch LCD Module (ST7735S)** oder beliebige 1,8" SPI-TFT-Module mit ST7735/ST7735S-Controller.
 
 ![Schaltplan](Schematics.png)
 

@@ -444,12 +444,18 @@ void PyMqtt::begin() {
 
     mqttClient.setServer(config.mqtt.server.c_str(), config.mqtt.port);
     mqttClient.setBufferSize(2048);
+    // Reduce socket timeout from the default 15 s to 3 s.
+    // PubSubClient::loop() -> readPacket() blocks up to socketTimeout waiting
+    // for the next byte when the TCP socket shows data available but the
+    // underlying connection is in a zombie state. 15 s > ESP32 TWDT timeout
+    // (~5 s for idle-task starvation) -> TASK_WATCHDOG. 3 s leaves margin.
+    mqttClient.setSocketTimeout(3);
 
     // Discovery darf NICHT automatisch starten
     discoveryPhase = DISC_IDLE;
     discoveryActive = false;
 
-    logInfo("MQTT: BufferSize set to 2048 bytes");
+    logInfo("MQTT: BufferSize set to 2048 bytes, socketTimeout=3s");
 }
 
 
@@ -609,62 +615,88 @@ void PyMqtt::loop() {
     // parser ensure every module parses reliably, so the latest parsed module
     // is published between BAT parses without per-module buffering. This keeps
     // internal DRAM usage bounded (2 buffers instead of one per module).
+    // Network I/O (mqttClient.publish) must NOT be called while holding the
+    // mutex: a stalled TCP connection can block for up to socketTimeout seconds
+    // -> TASK_WATCHDOG if the idle task is starved. Copy cells under lock,
+    // release, then publish outside the critical section.
     // ---------------------------------------------------------
     if (batParserHasData) {
         int moduleIndex = batParserModuleIndex;
+        std::vector<BatData> batCellsCopy;
         if (g_batMutex && xSemaphoreTake(g_batMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             const BatBuffer& active = batUseA ? batA : batB;
             if (!active.cells.empty()) {
-                publishBatCells(moduleIndex, active.cells);
+                batCellsCopy = active.cells;  // copy under lock
             }
             xSemaphoreGive(g_batMutex);
+        }
+        if (!batCellsCopy.empty()) {
+            publishBatCells(moduleIndex, batCellsCopy);  // publish outside lock
         }
         batParserHasData = false;
     }
 
     // ---------------------------------------------------------
     // PUBLISH STAT (gedrosselt: max. 1 pending Modul pro loop)
+    // Copy pending StatData under lock, release mutex before network I/O.
     // ---------------------------------------------------------
-    if (g_statMutex && xSemaphoreTake(g_statMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        int checked = 0;
-        int idx = nextStatPublishIdx;
-        while (checked < (MAX_BATTERY_MODULES - 1)) {
-            if (idx <= 0 || idx >= MAX_BATTERY_MODULES) idx = 1;
-            if (g_pendingStatReady[idx]) {
-                g_pendingStatReady[idx] = false;
-                publishStat(idx, g_pendingStat[idx]);
+    {
+        int statPublishIdx = -1;
+        StatData statCopy;
+        if (g_statMutex && xSemaphoreTake(g_statMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            int checked = 0;
+            int idx = nextStatPublishIdx;
+            while (checked < (MAX_BATTERY_MODULES - 1)) {
+                if (idx <= 0 || idx >= MAX_BATTERY_MODULES) idx = 1;
+                if (g_pendingStatReady[idx]) {
+                    g_pendingStatReady[idx] = false;
+                    statCopy = g_pendingStat[idx];  // copy under lock
+                    statPublishIdx = idx;
+                    idx++;
+                    break;
+                }
                 idx++;
-                break;
+                checked++;
             }
-            idx++;
-            checked++;
+            if (idx >= MAX_BATTERY_MODULES) idx = 1;
+            nextStatPublishIdx = idx;
+            xSemaphoreGive(g_statMutex);
         }
-        if (idx >= MAX_BATTERY_MODULES) idx = 1;
-        nextStatPublishIdx = idx;
-        xSemaphoreGive(g_statMutex);
+        if (statPublishIdx >= 0) {
+            publishStat(statPublishIdx, statCopy);  // publish outside lock
+        }
     }
     statParserHasData = false;  // legacy flag cleared
 
     // ---------------------------------------------------------
     // PUBLISH INFO (gedrosselt: max. 1 pending Modul pro loop)
+    // Copy pending InfoData under lock, release mutex before network I/O.
     // ---------------------------------------------------------
-    if (g_infoMutex && xSemaphoreTake(g_infoMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        int checked = 0;
-        int idx = nextInfoPublishIdx;
-        while (checked < (MAX_BATTERY_MODULES - 1)) {
-            if (idx <= 0 || idx >= MAX_BATTERY_MODULES) idx = 1;
-            if (g_pendingInfoReady[idx]) {
-                g_pendingInfoReady[idx] = false;
-                publishInfo(idx, g_pendingInfo[idx]);
+    {
+        int infoPublishIdx = -1;
+        InfoData infoCopy;
+        if (g_infoMutex && xSemaphoreTake(g_infoMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            int checked = 0;
+            int idx = nextInfoPublishIdx;
+            while (checked < (MAX_BATTERY_MODULES - 1)) {
+                if (idx <= 0 || idx >= MAX_BATTERY_MODULES) idx = 1;
+                if (g_pendingInfoReady[idx]) {
+                    g_pendingInfoReady[idx] = false;
+                    infoCopy = g_pendingInfo[idx];  // copy under lock
+                    infoPublishIdx = idx;
+                    idx++;
+                    break;
+                }
                 idx++;
-                break;
+                checked++;
             }
-            idx++;
-            checked++;
+            if (idx >= MAX_BATTERY_MODULES) idx = 1;
+            nextInfoPublishIdx = idx;
+            xSemaphoreGive(g_infoMutex);
         }
-        if (idx >= MAX_BATTERY_MODULES) idx = 1;
-        nextInfoPublishIdx = idx;
-        xSemaphoreGive(g_infoMutex);
+        if (infoPublishIdx >= 0) {
+            publishInfo(infoPublishIdx, infoCopy);  // publish outside lock
+        }
     }
     infoParserHasData = false;  // legacy flag cleared
 
